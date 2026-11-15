@@ -9,6 +9,7 @@ import numpy as np
 from echolens import (
     PHONES,
     PhoneLM,
+    add_noise,
     align,
     beam_search_decode,
     beam_search_nbest,
@@ -75,6 +76,62 @@ class DataTest(unittest.TestCase):
             row = json.loads(lines[0])
             for token in row["text"].split():
                 self.assertIn(token, PHONES)
+
+
+class FormantTest(unittest.TestCase):
+    """音素身份必须来自共振峰，而不是"每个音素一个正弦"。"""
+
+    @staticmethod
+    def _envelope(wave: np.ndarray, sr: int = 8000) -> tuple[np.ndarray, np.ndarray]:
+        # 取音素主体（跳过 150 ms 前导静音），做谱包络：谐波细结构不该主导结论
+        segment = wave[1300:2500] * np.hanning(1500 - 300)
+        spectrum = np.abs(np.fft.rfft(segment, n=4096))
+        freqs = np.fft.rfftfreq(4096, d=1.0 / sr)
+        smooth = np.convolve(spectrum, np.ones(31) / 31.0, mode="same")
+        return freqs, smooth
+
+    @classmethod
+    def _peak(cls, wave: np.ndarray, low: float, high: float) -> float:
+        freqs, smooth = cls._envelope(wave)
+        band = (freqs >= low) & (freqs <= high)
+        return float(freqs[band][int(np.argmax(smooth[band]))])
+
+    def test_vowel_peaks_land_near_the_design_values(self):
+        # 设计值 F1 760 / F2 1180；8 kHz 下 f0 只有百赫兹，谐波会把它拉偏一些，给 15%
+        wave = synth_word("a", seed=5, phone_ms=200)
+        self.assertLess(abs(self._peak(wave, 150.0, 900.0) - 760.0) / 760.0, 0.15)
+        self.assertLess(abs(self._peak(wave, 900.0, 2100.0) - 1180.0) / 1180.0, 0.15)
+
+    def test_front_and_back_vowels_are_separated_by_f2(self):
+        # i 是高前元音（F2 2300 左右），u 是高后元音（F2 900 左右）：相对关系必须成立
+        front = self._peak(synth_word("i", seed=6, phone_ms=200), 900.0, 3000.0)
+        back = self._peak(synth_word("u", seed=6, phone_ms=200), 900.0, 3000.0)
+        self.assertGreater(front, back + 400.0)
+
+    def test_longer_vocal_tract_lowers_formants(self):
+        # 声道更长（s6, vtl 1.14）-> 共振峰整体下移；声道更短（s4, vtl 0.88）-> 上移。
+        # 这是"说话人音色"在本版里唯一该动的东西，测它比测任何指标都直接
+        short_tract = self._peak(synth_word("a", seed=7, speaker="s4", phone_ms=200), 150.0, 900.0)
+        long_tract = self._peak(synth_word("a", seed=7, speaker="s6", phone_ms=200), 150.0, 900.0)
+        self.assertLess(long_tract, short_tract)
+
+
+class NoiseTest(unittest.TestCase):
+    def test_add_noise_hits_the_target_snr(self):
+        wave = synth_word("kato", seed=1)
+        for target in (20.0, 10.0, 0.0):
+            noisy = add_noise(wave, target, seed=3)
+            residual = noisy - wave
+            measured = 10.0 * np.log10(np.mean(np.square(wave)) / np.mean(np.square(residual)))
+            self.assertLess(abs(measured - target), 1.0)
+
+    def test_add_noise_is_reproducible(self):
+        wave = synth_word("suto", seed=2)
+        self.assertTrue(np.allclose(add_noise(wave, 5.0, seed=4), add_noise(wave, 5.0, seed=4)))
+
+    def test_noise_leaves_an_empty_signal_alone(self):
+        empty = np.zeros(0, dtype=np.float32)
+        self.assertEqual(add_noise(empty, 10.0).size, 0)
 
 
 class SpeakerTest(unittest.TestCase):
@@ -283,6 +340,15 @@ class ReportTest(unittest.TestCase):
         self.assertIn("word err rate", html)
         self.assertIn("greedy", html)
         self.assertIn("beam", html)
+
+    def test_report_shows_noise_robustness_table(self):
+        summary = evaluation_stub()
+        summary["decoder"] = "beam"
+        loud = dict(summary)
+        loud["error_rate"] = 0.6
+        html = build_report(summary, [], noise_runs=[("clean", summary), ("0 dB", loud)])
+        self.assertIn("Noise robustness", html)
+        self.assertIn("0 dB", html)
 
     def test_report_colors_words_the_right_way_round(self):
         # 词标记容易写反：flags 为 True 表示"这个词错了"，渲染时必须红，不是绿
