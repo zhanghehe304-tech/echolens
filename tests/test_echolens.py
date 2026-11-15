@@ -218,7 +218,8 @@ class LanguageModelTest(unittest.TestCase):
     def test_lm_scores_are_finite_log_probs(self):
         lm = PhoneLM()
         self.assertLess(lm.score(list("suto")), 0.0)  # log 概率为负
-        self.assertTrue(np.isfinite(lm.score(list("xyz")))))  # 未登录音素走平滑，不炸
+        weird = lm.score(list("xyz"))
+        self.assertTrue(np.isfinite(weird))
 
 
 class AlignTest(unittest.TestCase):
