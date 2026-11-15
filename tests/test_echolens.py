@@ -6,7 +6,23 @@ from pathlib import Path
 
 import numpy as np
 
-from echolens import PHONES, align, build_report, corpus_error_rate, error_rate, greedy_decode, log_mel, read_wav, resample, synth_dataset, synth_word, write_wav
+from echolens import (
+    PHONES,
+    align,
+    beam_search_decode,
+    build_report,
+    corpus_error_rate,
+    error_rate,
+    greedy_decode,
+    log_mel,
+    read_wav,
+    resample,
+    synth_dataset,
+    synth_sentence,
+    synth_word,
+    word_error_rate,
+    write_wav,
+)
 
 
 class AudioTest(unittest.TestCase):
@@ -59,12 +75,88 @@ class DataTest(unittest.TestCase):
                 self.assertIn(token, PHONES)
 
 
+class SpeakerTest(unittest.TestCase):
+    def test_same_speaker_is_deterministic(self):
+        first = synth_word("kato", seed=3, speaker="s1")
+        second = synth_word("kato", seed=3, speaker="s1")
+        self.assertTrue(np.allclose(first, second))
+
+    def test_different_speakers_sound_different(self):
+        # 同一句话、同一个 seed，只换说话人：波形必须有可见差异（音色不是一个随机种子）
+        s1 = synth_word("kato", seed=5, speaker="s1")
+        s4 = synth_word("kato", seed=5, speaker="s4")
+        shorter = min(len(s1), len(s4))
+        self.assertFalse(np.allclose(s1[:shorter], s4[:shorter]))
+        # 谱重心也拉开了：高基频说话人在高频段能量占比更高
+        def centroid(wave):
+            spectrum = np.abs(np.fft.rfft(wave[: len(wave) // 2]))
+            freqs = np.fft.rfftfreq(len(wave) // 2, d=1.0 / 8000)
+            return float((spectrum * freqs).sum() / (spectrum.sum() + 1e-9))
+
+        self.assertNotAlmostEqual(centroid(s1), centroid(s4), places=1)
+
+    def test_unknown_speaker_is_rejected(self):
+        with self.assertRaises(ValueError):
+            synth_word("kato", seed=1, speaker="s9")
+
+    def test_sentence_holds_all_words(self):
+        wave = synth_sentence(["kato", "suto"], seed=2, speaker="s2")
+        single = synth_word("kato", seed=2, speaker="s2")
+        self.assertGreater(len(wave), len(single))  # 两个词比一个词长
+        self.assertGreater(len(wave), 2 * len(single) * 0.9)
+
+
+class ManifestTest(unittest.TestCase):
+    def test_manifest_carries_words_and_speaker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            train, _ = synth_dataset(directory, n_train=8, n_dev=2, seed=1, n_speakers=4)
+            import json
+
+            rows = [json.loads(line) for line in Path(train).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 8)
+            speakers = {row["speaker"] for row in rows}
+            self.assertEqual(len(speakers), 4)  # 8 句按说话人轮转，四个都覆盖到
+            for row in rows:
+                self.assertIsInstance(row["words"], list)
+                self.assertGreaterEqual(len(row["words"]), 1)
+                # words 拼起来必须等于 text 里的音素
+                self.assertEqual("".join(row["words"]), "".join(row["text"].split()))
+
+
 class DecodeTest(unittest.TestCase):
     def test_greedy_collapses_repeats_and_blanks(self):
         # blank=0，连续相同合并，blank 断开重复
         self.assertEqual(greedy_decode([1, 1, 0, 2, 2, 0, 1], blank=0), [1, 2, 1])
         self.assertEqual(greedy_decode([], blank=0), [])
         self.assertEqual(greedy_decode([0, 0, 0], blank=0), [])
+
+    def test_beam_matches_greedy_on_peaked_frames(self):
+        # 造一段概率很尖的帧：前两帧 1 类占优、后三帧 2 类占优，其余接近零
+        frames = np.full((5, 4), -20.0)
+        frames[:2, 1] = -0.01
+        frames[2:, 2] = -0.01
+        frames[:, 0] = -10.0
+        greedy = greedy_decode(frames.argmax(axis=1).tolist(), blank=0)
+        beam = beam_search_decode(frames, beam=10, blank=0)
+        self.assertEqual(greedy, [1, 2])
+        self.assertEqual(beam, [1, 2])
+
+    def test_beam_keeps_single_token_for_one_phone(self):
+        frames = np.full((4, 4), -20.0)
+        frames[:, 1] = -0.01
+        self.assertEqual(beam_search_decode(frames, beam=10, blank=0), [1])
+
+    def test_beam_handles_empty_frames(self):
+        self.assertEqual(beam_search_decode(np.zeros((0, 4)), beam=10, blank=0), [])
+
+    def test_beam_prefers_likely_prefix_over_shorter_one(self):
+        # 第 3 帧明显指向 3 类，但前两帧指向 1、2 类；beam 不该为了"更短"把 3 类丢掉
+        frames = np.full((3, 4), -20.0)
+        frames[0, 1] = -0.01
+        frames[1, 2] = -0.01
+        frames[2, 3] = -0.01
+        frames[:, 0] = -12.0
+        self.assertEqual(beam_search_decode(frames, beam=5, blank=0), [1, 2, 3])
 
 
 class AlignTest(unittest.TestCase):
@@ -87,6 +179,25 @@ class AlignTest(unittest.TestCase):
         self.assertAlmostEqual(summary["exact_match"], 0.5)
         self.assertEqual(summary["samples"], 2.0)
 
+    def test_word_error_rate_uses_reference_word_boundaries(self):
+        ref = ["k", "a", "t", "o", "s", "u", "t", "o"]
+        hyp = ["k", "a", "t", "a", "s", "u", "t", "o"]  # 第一个词里替换了一个音素
+        ops = align(ref, hyp)
+        bad, total, flags = word_error_rate(["kato", "suto"], ops)
+        self.assertEqual((bad, total), (1, 2))
+        self.assertEqual(flags, [True, False])
+
+    def test_word_error_rate_flags_word_on_deletion(self):
+        ref = ["k", "a", "t", "o", "s", "u", "t", "o"]
+        hyp = ["k", "a", "s", "u", "t", "o"]  # 第一个词漏了两个音素
+        bad, total, _ = word_error_rate(["kato", "suto"], align(ref, hyp))
+        self.assertEqual((bad, total), (1, 2))
+
+    def test_word_error_rate_rejects_mismatched_ops(self):
+        # 词长度和参考音素数对不上，说明传错了句子的对齐结果，必须报错而不是猜
+        with self.assertRaises(ValueError):
+            word_error_rate(["kato"], align(["k", "a", "t", "o", "s"], ["k", "a", "t", "o", "s"]))
+
 
 class ReportTest(unittest.TestCase):
     def test_report_contains_sections(self):
@@ -97,6 +208,28 @@ class ReportTest(unittest.TestCase):
         self.assertIn("Per-sample errors", html)
         self.assertIn("替换", html)
         self.assertIn("data:image/png;base64,", html)  # 图已内联
+
+    def test_report_shows_decoder_comparison_and_wer(self):
+        summary = evaluation_stub()
+        summary["word_error_rate"] = 0.5
+        summary["decoder"] = "beam"
+        reference = dict(summary)
+        reference["decoder"] = "greedy"
+        html = build_report(summary, [], reference_run=reference)
+        self.assertIn("Decoder comparison", html)
+        self.assertIn("word err rate", html)
+        self.assertIn("greedy", html)
+        self.assertIn("beam", html)
+
+    def test_report_colors_words_the_right_way_round(self):
+        # 词标记容易写反：flags 为 True 表示"这个词错了"，渲染时必须红，不是绿
+        summary = evaluation_stub()
+        summary["word_error_rate"] = 0.5
+        summary["details"][0]["words"] = ["kato", "suto"]
+        summary["details"][0]["word_flags"] = [False, True]
+        html = build_report(summary, [])
+        self.assertIn('<span class="ok">kato</span>', html)
+        self.assertIn('<span class="sub">suto</span>', html)
 
 
 def evaluation_stub():

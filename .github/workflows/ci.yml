@@ -39,5 +39,7 @@ jobs:
           echolens demo --out /tmp/smoke --epochs 3 --n-train 40 --n-dev 12 --quiet
           test -f /tmp/smoke/echolens-report.html
           grep -q "phone err rate" /tmp/smoke/echolens-report.html
+          grep -q "word err rate" /tmp/smoke/echolens-report.html
+          grep -q "Decoder comparison" /tmp/smoke/echolens-report.html
           grep -q "Per-sample errors" /tmp/smoke/echolens-report.html
           test -f /tmp/smoke/echolens.pt
