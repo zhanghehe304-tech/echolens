@@ -121,7 +121,7 @@ echolens/
   metrics.py     贪心解码、beam search / nbest、PhoneLM、对齐、PER / WER
   report.py      HTML 报告
   cli.py         demo / train / eval
-tests/           33 个单测，覆盖数据、特征、对齐、解码、语言模型、报告、训练
+tests/           35 个单测，覆盖数据、特征、对齐、解码、语言模型、音高增强、报告、训练
 examples/        调 Python API 的示例
 ```
 
