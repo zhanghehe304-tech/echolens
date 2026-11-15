@@ -8,8 +8,10 @@ import numpy as np
 
 from echolens import (
     PHONES,
+    PhoneLM,
     align,
     beam_search_decode,
+    beam_search_nbest,
     build_report,
     corpus_error_rate,
     error_rate,
@@ -66,7 +68,7 @@ class DataTest(unittest.TestCase):
             for line in lines:
                 self.assertTrue(line.startswith('{"audio": "audio/train-'))
             audio = Path(directory) / "audio"
-            self.assertEqual(len(list(audio.glob("*.wav"))), 9)
+            self.assertEqual(len(list(audio.glob("*.wav")), 9)
             # 文本是音素序列，空格分隔
             import json
 
@@ -106,6 +108,19 @@ class SpeakerTest(unittest.TestCase):
         self.assertGreater(len(wave), 2 * len(single) * 0.9)
 
 
+class PitchJitterTest(unittest.TestCase):
+    def test_jitter_keeps_length_and_changes_content(self):
+        plain = synth_word("kato", seed=3, speaker="s1")
+        jittered = synth_word("kato", seed=3, speaker="s1", f0_jitter=0.12)
+        # 抖动只动基频，时长和音量序列不变
+        self.assertEqual(len(plain), len(jittered))
+        self.assertFalse(np.allclose(plain, jittered))
+
+    def test_zero_jitter_is_the_plain_signal(self):
+        plain = synth_word("sami", seed=7, speaker="s2")
+        self.assertTrue(np.allclose(plain, synth_word("sami", seed=7, speaker="s2", f0_jitter=0.0)))
+
+
 class ManifestTest(unittest.TestCase):
     def test_manifest_carries_words_and_speaker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,6 +136,27 @@ class ManifestTest(unittest.TestCase):
                 self.assertGreaterEqual(len(row["words"]), 1)
                 # words 拼起来必须等于 text 里的音素
                 self.assertEqual("".join(row["words"]), "".join(row["text"].split()))
+
+    def test_heldout_split_never_shares_a_speaker_with_training(self):
+        with tempfile.TemporaryDirectory() as directory:
+            train, dev, unseen = synth_dataset(
+                directory,
+                n_train=8,
+                n_dev=4,
+                seed=2,
+                n_speakers=2,
+                heldout_speakers=["s3", "s4"],
+                n_dev_unseen=4,
+            )
+            import json
+
+            def speakers_of(path):
+                return {json.loads(line)["speaker"] for line in Path(path).read_text(encoding="utf-8").splitlines()}
+
+            trained = speakers_of(train) | speakers_of(dev)
+            self.assertEqual(trained, {"s1", "s2"})
+            self.assertEqual(speakers_of(unseen), {"s3", "s4"})  # 训练从没听过这两个音色
+            self.assertTrue(trained.isdisjoint(speakers_of(unseen)))
 
 
 class DecodeTest(unittest.TestCase):
@@ -157,6 +193,32 @@ class DecodeTest(unittest.TestCase):
         frames[2, 3] = -0.01
         frames[:, 0] = -12.0
         self.assertEqual(beam_search_decode(frames, beam=5, blank=0), [1, 2, 3])
+
+    def test_nbest_is_ranked_and_starts_with_the_best(self):
+        frames = np.full((4, 4), -20.0)
+        frames[0, 1] = -0.01
+        frames[1, 2] = -0.5
+        frames[2, 1] = -0.6
+        frames[3, 3] = -0.7
+        frames[:, 0] = -3.0
+        candidates = beam_search_nbest(frames, beam=6, blank=0, nbest=3)
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertEqual(candidates[0][0], beam_search_decode(frames, beam=6, blank=0))
+        scores = [score for _, score in candidates]
+        self.assertEqual(scores, sorted(scores, reverse=True))  # 按概率从高到低
+
+
+class LanguageModelTest(unittest.TestCase):
+    def test_lm_prefers_a_sequence_the_word_list_contains(self):
+        lm = PhoneLM()
+        in_vocab = lm.score(list("kato"))  # k-a-t-o 在词表里
+        broken = lm.score(list("kaao"))  # a 后面跟 a，词表里没有这种接续
+        self.assertGreater(in_vocab, broken)
+
+    def test_lm_scores_are_finite_log_probs(self):
+        lm = PhoneLM()
+        self.assertLess(lm.score(list("suto")), 0.0)  # log 概率为负
+        self.assertTrue(np.isfinite(lm.score(list("xyz")))  # 未登录音素走平滑，不炸
 
 
 class AlignTest(unittest.TestCase):
