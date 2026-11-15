@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# 默认输出目录：数据、checkpoint、报告都是跑出来的，不进版本库
+out/
+
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db

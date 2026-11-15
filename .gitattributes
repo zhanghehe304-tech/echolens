@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.py   text diff=python
+*.toml text diff=toml
+*.yml  text
+*.yaml text
+*.md   text
+LICENSE text
+
+*.wav  binary
+*.png  binary
+*.pt   binary
