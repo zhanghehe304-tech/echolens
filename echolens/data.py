@@ -88,3 +88,72 @@ def synth_word(
     wave = np.concatenate(pieces + [np.zeros(int(sr * 0.1), dtype=np.float32)])
     wave += rng.normal(0.0, noise, size=wave.size).astype(np.float32)
     return np.clip(wave, -1.0, 1.0).astype(np.float32)
+
+
+def synth_dataset(
+    out_dir: str | Path,
+    n_train: int = 120,
+    n_dev: int = 30,
+    seed: int = 0,
+    sr: int = 8000,
+    keep_audio: bool = True,
+) -> Tuple[Path, Path]:
+    """生成训练/开发两份 jsonl，返回 (train_manifest, dev_manifest)。
+
+    音频默认落盘到 ``<out_dir>/audio``，方便直接用耳朵抽查合成结果。
+    """
+    out_dir = Path(out_dir)
+    audio_dir = out_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    train = _write_split(audio_dir, n_train, seed, sr, keep_audio, prefix="train")
+    dev = _write_split(audio_dir, n_dev, seed + 1000, sr, keep_audio, prefix="dev")
+
+    train_path = out_dir / "train.jsonl"
+    dev_path = out_dir / "dev.jsonl"
+    write_manifest(train_path, train)
+    write_manifest(dev_path, dev)
+    return train_path, dev_path
+
+
+def _write_split(audio_dir: Path, count: int, seed: int, sr: int, keep_audio: bool, prefix: str) -> List[dict]:
+    rng = np.random.default_rng(seed)
+    items: List[dict] = []
+    for i in range(count):
+        word = str(WORDS[int(rng.integers(0, len(WORDS)))])
+        wave = synth_word(word, sr=sr, seed=seed + i)
+        name = f"{prefix}-{i:04d}-{word}.wav"
+        if keep_audio:
+            write_wav(audio_dir / name, wave, sr=sr)
+            # 用正斜杠，manifest 在 Windows 和 Linux 上都能被同一份代码读
+            relative = f"audio/{name}"
+            items.append({"audio": relative, "text": " ".join(word)})
+        else:
+            items.append({"audio": name, "text": " ".join(word)})
+    return items
+
+
+def write_manifest(path: str | Path, items: List[dict]) -> str:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for item in items:
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    return str(path)
+
+
+def read_manifest(path: str | Path) -> List[dict]:
+    path = Path(path)
+    items: List[dict] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if "audio" not in row or "text" not in row:
+                raise ValueError(f"manifest 每行需要 audio/text: {path}")
+            items.append(row)
+    if not items:
+        raise ValueError(f"manifest 为空: {path}")
+    return items
