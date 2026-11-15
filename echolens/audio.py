@@ -1,4 +1,4 @@
-"""echolens.audio —— WAV 读写与 log-mel 特征，只依赖 numpy。
+"""echolens.audio —— WAV 读写、重采样、白噪注入与 log-mel 特征，只依赖 numpy。
 
 设计原则：特征层不依赖 torch，也不假设采样率。默认参数按 8 kHz、25 ms 窗、
 10 ms 帧移给出，这是语音识别里最常见的一组；别的采样率照样能跑。
@@ -12,7 +12,7 @@ from typing import Optional
 
 import numpy as np
 
-__all__ = ["read_wav", "write_wav", "resample", "mel_filterbank", "log_mel"]
+__all__ = ["read_wav", "write_wav", "resample", "add_noise", "mel_filterbank", "log_mel"]
 
 
 def read_wav(path: str | Path) -> tuple[int, np.ndarray]:
@@ -56,6 +56,25 @@ def resample(x: np.ndarray, sr: int, target: int) -> np.ndarray:
     old_index = np.arange(x.size, dtype=np.float64) / float(sr)
     new_index = np.arange(out_size, dtype=np.float64) / float(target)
     return np.interp(new_index, old_index, x).astype(np.float32)
+
+
+def add_noise(x: np.ndarray, snr_db: float, seed: int = 0) -> np.ndarray:
+    """按目标 SNR 往波形里混白噪，用来量模型的噪声鲁棒性。
+
+    SNR 按**全带**功率定义（噪声铺满 0~Nyquist），所以落进 0.3~3.5 kHz 语音主频带的
+    那部分噪声比标称值低一些——这里给的是上下可比的相对刻度，不是声学实验室里的
+    A 加权信噪比。
+    """
+    x = np.asarray(x, dtype=np.float32).reshape(-1)
+    if x.size == 0 or not np.isfinite(snr_db):
+        return x
+    power = float(np.mean(np.square(x, dtype=np.float64)))
+    if power <= 0.0:
+        return x
+    noise_power = power / (10.0 ** (float(snr_db) / 10.0))
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, np.sqrt(noise_power), size=x.size).astype(np.float32)
+    return (x + noise).astype(np.float32)
 
 
 def _hz_to_mel(freq):
