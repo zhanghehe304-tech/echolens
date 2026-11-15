@@ -120,10 +120,12 @@ def build_report(
     max_rows: int = 12,
     reference_run: Dict[str, object] | None = None,
     speaker_runs: Sequence[Tuple[str, Dict[str, object]]] | None = None,
+    noise_runs: Sequence[Tuple[str, Dict[str, object]]] | None = None,
 ) -> str:
     """组装 HTML 字符串。``summary`` 来自 :func:`echolens.train.evaluate`。
 
-    ``reference_run`` 给另一档解码的评测结果时，会多出一张"解码器对比"表。
+    ``reference_run`` 给另一档解码的评测结果时，会多出一张"解码器对比"表；
+    ``speaker_runs`` 是不同说话人分组的对比，``noise_runs`` 是不同信噪比下的对比。
     """
     details = summary.get("details") or []
     details = list(details)
@@ -248,6 +250,18 @@ def build_report(
             + "</tbody></table></div>"
         )
 
+    noise_panel = ""
+    if noise_runs:
+        noise_panel = (
+            '<div class="panel">'
+            '<p class="note">同一个 checkpoint，在开发集波形上按标称 SNR 混白噪后重新提特征。'
+            "CMVN 会把整体电平拉回来，所以曲线下降反映的是噪声纹理，而不是音量。</p>"
+            "<table><thead><tr><th>condition</th><th>PER</th><th>WER</th><th>exact</th></tr></thead>"
+            "<tbody>"
+            + "".join(_cmp_row(label, run) for label, run in noise_runs)
+            + "</tbody></table></div>"
+        )
+
     body = []
     if charts:
         body.append(
@@ -260,6 +274,9 @@ def build_report(
 
     if speaker_panel:
         body.append(f"<section><h2>Speaker generalisation</h2>{speaker_panel}</section>")
+
+    if noise_panel:
+        body.append(f"<section><h2>Noise robustness</h2>{noise_panel}</section>")
 
     body.append(f"<section><h2>Per-sample errors</h2>{error_panel}</section>")
     body.append(f"<section><h2>Error breakdown</h2>{summary_panel}</section>")
