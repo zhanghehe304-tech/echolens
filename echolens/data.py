@@ -69,15 +69,20 @@ WORDS: Tuple[str, ...] = (
     "seta",
 )
 
-# 四个说话人。f0 是基频缩放，rate 是语速基线，h2/h3 是二、三次谐波权重，
+# 八个说话人。f0 是基频缩放，rate 是语速基线，h2/h3 是二、三次谐波权重，
 # noise 是底噪。真实的共振峰不做建模，音色差别全部落在谐波结构上——够用，且不假装。
-SPEAKERS: Tuple[str, ...] = ("s1", "s2", "s3", "s4")
+# 前四个（s1–s4）默认进训练集，后四个（s5–s8）默认当"没见过的音色"做泛化测试。
+SPEAKERS: Tuple[str, ...] = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
 
 VOICES: Dict[str, Dict[str, float]] = {
     "s1": {"f0": 0.90, "rate": 1.05, "h2": 0.45, "h3": 0.10, "noise": 0.030},
     "s2": {"f0": 1.12, "rate": 0.95, "h2": 0.22, "h3": 0.00, "noise": 0.045},
     "s3": {"f0": 0.98, "rate": 1.12, "h2": 0.35, "h3": 0.18, "noise": 0.038},
     "s4": {"f0": 1.22, "rate": 0.88, "h2": 0.12, "h3": 0.06, "noise": 0.050},
+    "s5": {"f0": 1.05, "rate": 1.00, "h2": 0.55, "h3": 0.25, "noise": 0.033},
+    "s6": {"f0": 0.85, "rate": 1.18, "h2": 0.18, "h3": 0.05, "noise": 0.048},
+    "s7": {"f0": 1.32, "rate": 1.08, "h2": 0.30, "h3": 0.14, "noise": 0.042},
+    "s8": {"f0": 0.94, "rate": 0.92, "h2": 0.08, "h3": 0.00, "noise": 0.026},
 }
 
 
@@ -97,11 +102,15 @@ def synth_word(
     gap_ms: float = 55.0,
     noise: Optional[float] = None,
     speaker: Optional[str] = None,
+    f0_jitter: float = 0.0,
 ) -> np.ndarray:
     """把一个词渲染成波形：音素按序拼接，每个音素带随机音高抖动与音量起伏。
 
     ``speaker`` 给定后，基频缩放、谐波权重、语速基线、底噪都跟着这个说话人走；
     同一个说话人 + 同一个 seed 出来的波形逐采样一致。
+
+    ``f0_jitter`` 在说话人音色之上再整体平移基频（±f0_jitter），用来做音高增强：
+    训练时见过的人声变宽一点，模型才有机会泛化到没听过的音色。
     """
     voice = _voice(speaker)
     rng = np.random.default_rng(seed)
@@ -109,6 +118,7 @@ def synth_word(
     amp = float(rng.uniform(0.6, 1.0))  # 音量
     level = voice["noise"] if noise is None else float(noise)
     h2, h3 = voice["h2"], voice["h3"]
+    f0_scale = voice["f0"] * (1.0 + float(rng.uniform(-f0_jitter, f0_jitter)))
 
     pieces: List[np.ndarray] = [np.zeros(int(sr * 0.15), dtype=np.float32)]  # 前置静音
     gap = np.zeros(int(sr * gap_ms / 1000.0 * rate), dtype=np.float32)
@@ -116,7 +126,7 @@ def synth_word(
     for phone in word:
         if phone not in PHONES:
             raise ValueError(f"未定义的音素: {phone}")
-        freq = PHONES[phone] * voice["f0"] * float(rng.uniform(0.98, 1.02))
+        freq = PHONES[phone] * f0_scale * float(rng.uniform(0.98, 1.02))
         length = int(sr * phone_ms / 1000.0 * rate * float(rng.uniform(0.9, 1.1)))
         t = np.arange(length, dtype=np.float32) / sr
         tone = np.sin(2 * np.pi * freq * t) + h2 * np.sin(2 * np.pi * 2 * freq * t)
@@ -139,12 +149,15 @@ def synth_sentence(
     seed: int = 0,
     speaker: Optional[str] = None,
     word_gap_ms: float = 140.0,
+    f0_jitter: float = 0.0,
 ) -> np.ndarray:
     """把多个词连成一句：词内保持 55 ms 间隔，词与词之间换成长停顿 140 ms。"""
     pieces: List[np.ndarray] = []
     bridge = np.zeros(int(sr * word_gap_ms / 1000.0), dtype=np.float32)
     for i, word in enumerate(words):
-        pieces.append(synth_word(word, sr=sr, seed=seed + i * 17, speaker=speaker))
+        pieces.append(
+            synth_word(word, sr=sr, seed=seed + i * 17, speaker=speaker, f0_jitter=f0_jitter)
+        )
         if i < len(words) - 1:
             pieces.append(bridge)
     return np.concatenate(pieces).astype(np.float32)
@@ -160,23 +173,51 @@ def synth_dataset(
     n_speakers: int = 4,
     min_words: int = 1,
     max_words: int = 2,
-) -> Tuple[Path, Path]:
+    heldout_speakers: Sequence[str] | None = None,
+    n_dev_unseen: int = 0,
+    f0_jitter: float = 0.0,
+) -> Tuple[Path, ...]:
     """生成训练/开发两份 jsonl，返回 (train_manifest, dev_manifest)。
 
     音频默认落盘到 ``<out_dir>/audio``，方便直接用耳朵抽查合成结果。说话人按句轮转，
-    保证训练集和开发集覆盖到同一批音色——否则测不出跨说话人泛化。
+    保证训练集和开发集覆盖到同一批音色。
+
+    给了 ``heldout_speakers`` 且 ``n_dev_unseen > 0`` 时，额外生成一份
+    ``dev-unseen.jsonl``（只有没进过训练的音色），此时返回三元组：
+    (train, dev, dev_unseen)。这是测"跨说话人泛化"的唯一诚实的做法。
     """
     out_dir = Path(out_dir)
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    train = _write_split(audio_dir, n_train, seed, sr, keep_audio, "train", n_speakers, min_words, max_words)
-    dev = _write_split(audio_dir, n_dev, seed + 1000, sr, keep_audio, "dev", n_speakers, min_words, max_words)
+    speakers = list(SPEAKERS[: max(1, min(n_speakers, len(SPEAKERS)))])
+    # 音高增强只加在训练集：开发集保持干净，才量得准泛化
+    train = _write_split(
+        audio_dir, n_train, seed, sr, keep_audio, "train", speakers, min_words, max_words, f0_jitter
+    )
+    dev = _write_split(audio_dir, n_dev, seed + 1000, sr, keep_audio, "dev", speakers, min_words, max_words)
 
     train_path = out_dir / "train.jsonl"
     dev_path = out_dir / "dev.jsonl"
     write_manifest(train_path, train)
     write_manifest(dev_path, dev)
+
+    if heldout_speakers and n_dev_unseen > 0:
+        unseen = _write_split(
+            audio_dir,
+            n_dev_unseen,
+            seed + 2000,
+            sr,
+            keep_audio,
+            "dev-unseen",
+            list(heldout_speakers),
+            min_words,
+            max_words,
+        )
+        unseen_path = out_dir / "dev-unseen.jsonl"
+        write_manifest(unseen_path, unseen)
+        return train_path, dev_path, unseen_path
+
     return train_path, dev_path
 
 
@@ -187,18 +228,19 @@ def _write_split(
     sr: int,
     keep_audio: bool,
     prefix: str,
-    n_speakers: int,
+    speakers: Sequence[str],
     min_words: int,
     max_words: int,
+    f0_jitter: float = 0.0,
 ) -> List[dict]:
     rng = np.random.default_rng(seed)
-    speakers = list(SPEAKERS[: max(1, min(n_speakers, len(SPEAKERS)))])
+    pool = list(speakers)
     items: List[dict] = []
     for i in range(count):
-        speaker = speakers[i % len(speakers)]
+        speaker = pool[i % len(pool)]
         n_words = int(rng.integers(min_words, max_words + 1))
-        words = [str(WORDS[int(rng.integers(0, len(WORDS)))]) for _ in range(n_words)]
-        wave = synth_sentence(words, sr=sr, seed=seed + i, speaker=speaker)
+        words = [str(WORDS[int(rng.integers(0, len(WORDS)))] ) for _ in range(n_words)]
+        wave = synth_sentence(words, sr=sr, seed=seed + i, speaker=speaker, f0_jitter=f0_jitter)
         name = f"{prefix}-{i:04d}.wav"
         if keep_audio:
             write_wav(audio_dir / name, wave, sr=sr)
