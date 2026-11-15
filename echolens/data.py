@@ -239,7 +239,7 @@ def _write_split(
     for i in range(count):
         speaker = pool[i % len(pool)]
         n_words = int(rng.integers(min_words, max_words + 1))
-        words = [str(WORDS[int(rng.integers(0, len(WORDS)))])) for _ in range(n_words)]
+        words = [str(WORDS[int(rng.integers(0, len(WORDS)))]) for _ in range(n_words)]
         wave = synth_sentence(words, sr=sr, seed=seed + i, speaker=speaker, f0_jitter=f0_jitter)
         name = f"{prefix}-{i:04d}.wav"
         if keep_audio:
