@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .audio import log_mel, read_wav, resample
+from .audio import add_noise, log_mel, read_wav, resample
 from .data import read_manifest
 from .metrics import (
     PhoneLM,
@@ -34,17 +34,24 @@ def load_split(
     root: str | Path | None = None,
     sr: int = 8000,
     n_mels: int = 40,
+    snr_db: float | None = None,
 ) -> Tuple[List[np.ndarray], List[List[str]]]:
-    """读 manifest，返回 (特征列表, 音素序列列表)。相对路径默认相对 manifest 所在目录。"""
+    """读 manifest，返回 (特征列表, 音素序列列表)。相对路径默认相对 manifest 所在目录。
+
+    给了 ``snr_db`` 就在提特征之前按该信噪比混白噪——噪声鲁棒性扫描走这条路，
+    保证除了噪声之外每一步都和干净条件下完全一样。
+    """
     manifest = Path(manifest)
     base = Path(root) if root is not None else manifest.parent
     feats: List[np.ndarray] = []
     texts: List[List[str]] = []
-    for item in read_manifest(manifest):
+    for index, item in enumerate(read_manifest(manifest)):
         audio = Path(item["audio"])
         path = audio if audio.is_absolute() else base / audio
         rate, wave = read_wav(path)
         wave = resample(wave, rate, sr)
+        if snr_db is not None:
+            wave = add_noise(wave, snr_db, seed=index)
         feats.append(log_mel(wave, sr=sr, n_mels=n_mels))
         texts.append([t for t in str(item["text"]).replace("|", " ").split() if t])
     return feats, texts
@@ -57,7 +64,7 @@ def _encode(tokens: Sequence[str]) -> List[int]:
 def load_words(manifest: str | Path) -> List[List[str]]:
     """读 manifest 里的词序列，用来算词错误率。
 
-    有 ``words`` 字段就用它；没有就退回 ``text`` 里的 ``|`` 分隔；连分隔符都没有时
+    ù90``words`` 字段就用它；没有就退回 ``text`` 里的 ``|`` 分隔；连分隔符都没有时
     整句算一个词——宁可报个粗的 WER，也不假装知道词边界。
     """
     out: List[List[str]] = []
