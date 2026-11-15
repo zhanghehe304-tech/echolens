@@ -6,6 +6,8 @@
 
 ![report preview](https://aka.doubaocdn.com/s/VTVXMB2Vqv)
 
+> 上图是 `echolens demo` 生成的那份 `echolens-report.html` 的截图。
+
 ## 快速开始
 
 ```bash
@@ -15,7 +17,7 @@ echolens demo
 
 跑完后：
 
-- `out/data/` — CPU 340 个 16-bit WAV 和 `train.jsonl` / `dev.jsonl`
+- `out/data/` — 340 个 16-bit WAV 和 `train.jsonl` / `dev.jsonl`
 - `out/echolens.pt` — checkpoint
 - `out/echolens-report.html` — 报告（图片 base64 内联，单文件，直接双击打开）
 
@@ -84,7 +86,6 @@ echolens/
   cli.py         demo / train / eval
 tests/           15 个单测，覆盖数据、特征、对齐、报告、训练
 examples/        调 Python API 的示例
-docs/images/     README 用的截图
 ```
 
 ## 测试
