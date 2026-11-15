@@ -17,9 +17,13 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .data import WORDS
+
 __all__ = [
     "greedy_decode",
     "beam_search_decode",
+    "beam_search_nbest",
+    "PhoneLM",
     "align",
     "error_rate",
     "corpus_error_rate",
@@ -50,23 +54,24 @@ def _log_add(a: float, b: float) -> float:
     return a + math.log1p(math.exp(b - a))
 
 
-def beam_search_decode(
+def beam_search_nbest(
     frame_log_probs: np.ndarray,
     beam: int = 10,
     blank: int = 0,
     top_k: int = 4,
-) -> List[int]:
-    """CTC 前缀 beam search。
+    nbest: int = 1,
+) -> List[Tuple[List[int], float]]:
+    """CTC 前缀 beam search，返回按总分排序的 nbest 条 (前缀, log 概率)。
 
     ``frame_log_probs`` 是 (帧数, 类别数) 的 log 概率。每帧只展开 top_k 个类别，
     在 11 类的小词表上已经够，且把复杂度从 类别数 压到 top_k。
-    返回概率最高的前缀（已去掉 blank）。
+    返回的前缀已经去掉 blank。nbest > 1 时才是给语言模型 rescoring 用的。
     """
     probs = np.asarray(frame_log_probs, dtype=np.float64)
     if probs.ndim != 2:
         raise ValueError("frame_log_probs 需要是 (帧数, 类别数)")
     if probs.shape[0] == 0:
-        return []
+        return [([], 0.0)]
 
     top_k = max(1, min(int(top_k), probs.shape[1]))
     candidates = np.argpartition(-probs, top_k - 1, axis=1)[:, :top_k]
@@ -111,9 +116,57 @@ def beam_search_decode(
         blank_prob = {p: next_blank[p] for p in ranked}
         nonblank_prob = {p: next_nonblank[p] for p in ranked}
 
-    best = max((set(blank_prob) | set(nonblank_prob)),
-               key=lambda p: _log_add(blank_prob[p], nonblank_prob[p]))
-    return list(best)
+    ranked = sorted(
+        (set(blank_prob) | set(nonblank_prob)),
+        key=lambda p: _log_add(blank_prob[p], nonblank_prob[p]),
+        reverse=True,
+    )
+    out = [(list(p), _log_add(blank_prob[p], nonblank_prob[p])) for p in ranked[: max(1, int(nbest))]]
+    return out
+
+
+def beam_search_decode(
+    frame_log_probs: np.ndarray,
+    beam: int = 10,
+    blank: int = 0,
+    top_k: int = 4,
+) -> List[int]:
+    """只取 beam search 里总分最高的那条前缀（已去掉 blank）。"""
+    return beam_search_nbest(frame_log_probs, beam=beam, blank=blank, top_k=top_k, nbest=1)[0][0]
+
+
+class PhoneLM:
+    """极简音素 bigram：从词表统计相邻音素，用来给 beam 的 nbest 重新打分。
+
+    它不是语言模型——词表 16 个词，bigram 只学到"哪些音素会挨在一起"。
+    好处是零依赖、可解释；代价是它压不住词级错误（比如把 kato 认成 kata 时，
+    bigram 只看见 a→t 通不通，看不见"kata 不是词"）。
+    """
+
+    def __init__(self, words: Sequence[str] = WORDS, smoothing: float = 0.5):
+        self.vocab = sorted({phone for word in words for phone in word})
+        self.smoothing = float(smoothing)
+        self.start: Dict[str, float] = {phone: 0.0 for phone in self.vocab}
+        self.bigram: Dict[str, Dict[str, float]] = {phone: {q: 0.0 for q in self.vocab} for phone in self.vocab}
+        for word in words:
+            phones = list(word)
+            self.start[phones[0]] += 1.0
+            for left, right in zip(phones, phones[1:]):
+                self.bigram[left][right] += 1.0
+
+    def score(self, labels: Sequence[str]) -> float:
+        """一串音素的 log 概率（含句首分布），未登录音素按平滑处理。"""
+        if not labels:
+            return 0.0
+        total_count = sum(self.start.values()) + self.smoothing * len(self.vocab)
+        first = self.start.get(labels[0], 0.0) + self.smoothing
+        total = math.log(first / total_count)
+        for left, right in zip(labels, labels[1:]):
+            row = self.bigram.get(left)
+            context = (sum(row.values()) if row else 0.0) + self.smoothing * len(self.vocab)
+            count = (row.get(right, 0.0) if row else 0.0) + self.smoothing
+            total += math.log(count / context)
+        return total
 
 
 def align(ref: Sequence[str], hyp: Sequence[str]) -> List[Tuple[str, str, str]]:
