@@ -5,12 +5,21 @@
 
 from .audio import log_mel, read_wav, resample, write_wav
 from .data import PHONES, SPEAKERS, VOICES, WORDS, synth_dataset, synth_sentence, synth_word
-from .metrics import align, beam_search_decode, corpus_error_rate, error_rate, greedy_decode, word_error_rate
+from .metrics import (
+    PhoneLM,
+    align,
+    beam_search_decode,
+    beam_search_nbest,
+    corpus_error_rate,
+    error_rate,
+    greedy_decode,
+    word_error_rate,
+)
 from .model import BLANK, TOKENS, CTCNet
 from .report import build_report, write_report
 from .train import evaluate, load_checkpoint, load_split, load_words, save_checkpoint, train
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "PHONES",
@@ -20,8 +29,10 @@ __all__ = [
     "BLANK",
     "TOKENS",
     "CTCNet",
+    "PhoneLM",
     "align",
     "beam_search_decode",
+    "beam_search_nbest",
     "build_report",
     "corpus_error_rate",
     "error_rate",
