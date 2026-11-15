@@ -42,5 +42,6 @@ jobs:
           grep -q "word err rate" /tmp/smoke/echolens-report.html
           grep -q "Decoder comparison" /tmp/smoke/echolens-report.html
           grep -q "Speaker generalisation" /tmp/smoke/echolens-report.html
+          grep -q "Noise robustness" /tmp/smoke/echolens-report.html
           grep -q "Per-sample errors" /tmp/smoke/echolens-report.html
           test -f /tmp/smoke/echolens.pt
