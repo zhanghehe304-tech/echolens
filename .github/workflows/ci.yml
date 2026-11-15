@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install echolens
+        run: pip install -e .
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Demo smoke run
+        run: |
+          echolens demo --out /tmp/smoke --epochs 3 --n-train 40 --n-dev 12 --quiet
+          test -f /tmp/smoke/echolens-report.html
+          grep -q "phone err rate" /tmp/smoke/echolens-report.html
+          grep -q "Per-sample errors" /tmp/smoke/echolens-report.html
+          test -f /tmp/smoke/echolens.pt
