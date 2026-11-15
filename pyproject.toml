@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "echolens"
-version = "0.3.0"
-description = "语音识别流水线：合成数据、CTC 训练、音素错误率评测、单文件 HTML 报告。"
+version = "0.4.0"
+description = "语音识别流水线：源-滤波器合成数据、CTC 训练、音素错误率与噪声鲁棒性评测、单文件 HTML 报告。"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
