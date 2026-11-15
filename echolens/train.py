@@ -64,8 +64,7 @@ def _encode(tokens: Sequence[str]) -> List[int]:
 def load_words(manifest: str | Path) -> List[List[str]]:
     """读 manifest 里的词序列，用来算词错误率。
 
-    ù90``words`` 字段就用它；没有就退回 ``text`` 里的 ``|`` 分隔；连分隔符都没有时
-    整句算一个词——宁可报个粗的 WER，也不假装知道词边界。
+    有 ``words`` 字段就直接用；没有就退回 ``text`` 里的 ``|`` 分隔；再没有就整句当一个词。
     """
     out: List[List[str]] = []
     for item in read_manifest(manifest):
