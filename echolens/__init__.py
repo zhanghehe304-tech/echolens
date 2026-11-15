@@ -3,8 +3,8 @@
     from echolens import synth_dataset, load_split, train, evaluate
 """
 
-from .audio import log_mel, read_wav, resample, write_wav
-from .data import PHONES, SPEAKERS, VOICES, WORDS, synth_dataset, synth_sentence, synth_word
+from .audio import add_noise, log_mel, read_wav, resample, write_wav
+from .data import F0_BASE, PHONES, SPEAKERS, VOICES, WORDS, synth_dataset, synth_sentence, synth_word
 from .metrics import (
     PhoneLM,
     align,
@@ -19,9 +19,10 @@ from .model import BLANK, TOKENS, CTCNet
 from .report import build_report, write_report
 from .train import evaluate, load_checkpoint, load_split, load_words, save_checkpoint, train
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
+    "F0_BASE",
     "PHONES",
     "SPEAKERS",
     "VOICES",
@@ -30,6 +31,7 @@ __all__ = [
     "TOKENS",
     "CTCNet",
     "PhoneLM",
+    "add_noise",
     "align",
     "beam_search_decode",
     "beam_search_nbest",
