@@ -121,11 +121,13 @@ def build_report(
     reference_run: Dict[str, object] | None = None,
     speaker_runs: Sequence[Tuple[str, Dict[str, object]]] | None = None,
     noise_runs: Sequence[Tuple[str, Dict[str, object]]] | None = None,
+    noise_compare: Sequence[Tuple[str, Sequence[Tuple[str, Dict[str, object]]]]] | None = None,
 ) -> str:
     """组装 HTML 字符串。``summary`` 来自 :func:`echolens.train.evaluate`。
 
     ``reference_run`` 给另一档解码的评测结果时，会多出一张"解码器对比"表；
-    ``speaker_runs`` 是不同说话人分组的对比，``noise_runs`` 是不同信噪比下的对比。
+    ``speaker_runs`` 是不同说话人分组的对比，``noise_runs`` 是不同信噪比下的对比；
+    ``noise_compare`` 是两组（通常"干净训练" vs "加噪训练"）的噪声曲线并排对照。
     """
     details = summary.get("details") or []
     details = list(details)
@@ -262,6 +264,33 @@ def build_report(
             + "</tbody></table></div>"
         )
 
+    noise_compare_panel = ""
+    if noise_compare:
+        groups = list(noise_compare)
+        head = "".join(
+            f"<th>{html.escape(str(label))} PER</th><th>{html.escape(str(label))} WER</th>"
+            for label, _ in groups
+        )
+        rows: List[str] = []
+        for index, (condition, _) in enumerate(groups[0][1]):
+            cells = [f"<td>{html.escape(str(condition))}</td>"]
+            for _, runs in groups:
+                run = runs[index][1] if index < len(runs) else {}
+                wer = run.get("word_error_rate")
+                wer_text = f"{float(wer):.3f}" if wer is not None else "—"
+                cells.append(f"<td>{float(run.get('error_rate', 0.0)):.3f}</td><td>{wer_text}</td>")
+            rows.append("<tr>" + "".join(cells) + "</tr>")
+        noise_compare_panel = (
+            '<div class="panel">'
+            '<p class="note">同一批开发集、同一套解码，一行一档 SNR：左边训练时只见过干净音频，'
+            "右边训练集按各档 SNR 复制并混过白噪。两组的差才是加噪增强真正买到的东西。</p>"
+            "<table><thead><tr><th>condition</th>"
+            + head
+            + "</tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>"
+        )
+
     body = []
     if charts:
         body.append(
@@ -277,6 +306,9 @@ def build_report(
 
     if noise_panel:
         body.append(f"<section><h2>Noise robustness</h2>{noise_panel}</section>")
+
+    if noise_compare_panel:
+        body.append(f"<section><h2>Noise augmentation</h2>{noise_compare_panel}</section>")
 
     body.append(f"<section><h2>Per-sample errors</h2>{error_panel}</section>")
     body.append(f"<section><h2>Error breakdown</h2>{summary_panel}</section>")
