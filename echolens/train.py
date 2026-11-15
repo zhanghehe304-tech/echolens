@@ -15,7 +15,15 @@ from torch import nn
 
 from .audio import log_mel, read_wav, resample
 from .data import read_manifest
-from .metrics import beam_search_decode, corpus_error_rate, error_rate, greedy_decode, word_error_rate
+from .metrics import (
+    PhoneLM,
+    beam_search_decode,
+    beam_search_nbest,
+    corpus_error_rate,
+    error_rate,
+    greedy_decode,
+    word_error_rate,
+)
 from .model import BLANK, CTCNet, TOKENS, model_out_lengths, token_to_id
 
 __all__ = ["load_split", "load_words", "train", "evaluate", "save_checkpoint", "load_checkpoint"]
@@ -164,10 +172,14 @@ def evaluate(
     decode: str = "greedy",
     beam: int = 10,
     word_refs: Sequence[Sequence[str]] | None = None,
+    lm: PhoneLM | None = None,
+    lm_weight: float = 0.3,
 ) -> Dict[str, object]:
     """评测并返回汇总 + 每句细节（参考、识别、对齐操作）。
 
-    ``decode`` 取 ``"greedy"`` 或 ``"beam"``；给了 ``word_refs`` 就顺便算词错误率。
+    ``decode`` 取 ``"greedy"`` / ``"beam"`` / ``"beam+lm"``；``"beam+lm"`` 需要给 ``lm``，
+    它把 beam 的 nbest 用音素 bigram 重新打分，``lm_weight`` 是语言模型的权重。
+    给了 ``word_refs`` 就顺便算词错误率。
     """
     model.eval()
     details: List[Dict[str, object]] = []
@@ -181,6 +193,18 @@ def evaluate(
             ids = greedy_decode(log_probs.argmax(dim=-1).tolist(), blank=BLANK)
         elif decode == "beam":
             ids = beam_search_decode(log_probs.numpy(), beam=beam, blank=BLANK)
+        elif decode == "beam+lm":
+            if lm is None:
+                raise ValueError("beam+lm 需要传入 lm")
+            candidates = beam_search_nbest(log_probs.numpy(), beam=beam, blank=BLANK, nbest=max(2, beam // 2))
+            best_score: float | None = None
+            ids = []
+            for candidate, ctc_score in candidates:
+                labels = [TOKENS[i - 1] for i in candidate if 1 <= i <= len(TOKENS)]
+                total = ctc_score + lm_weight * lm.score(labels)
+                if best_score is None or total > best_score:
+                    best_score = total
+                    ids = candidate
         else:
             raise ValueError(f"未知的解码方式: {decode}")
 
