@@ -60,4 +60,4 @@ def synth_dataset(
     audio_dir = out_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    speakers = list(SPEAKERS[: max(1, min(n_speakers, len(SPEAKERS)))]) 
+    speakers = list(SPEAKERS[: max(1, min(n_speakers, len(SPEAKERS)))])
