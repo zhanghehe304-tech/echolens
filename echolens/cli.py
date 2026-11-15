@@ -33,6 +33,17 @@ def _fmt_per(summary) -> str:
     return f"PER {per:.3f}{wer_text}  exact {float(summary['exact_match']):.3f}  [{summary['decoder']}]"
 
 
+def _parse_snr(text: str) -> list[float]:
+    """把 ``"20,10,0,-5"`` 解析成一串信噪比；空串表示不做噪声扫描。"""
+    out: list[float] = []
+    for piece in str(text or "").replace("；", ",").split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        out.append(float(piece))
+    return out
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from .data import SPEAKERS, synth_dataset
     from .report import build_report, write_report
@@ -82,6 +93,18 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         speaker_runs.append(("unseen speakers", unseen))
 
     ckpt = save_checkpoint(model, out / "echolens.pt")
+
+    snr_list = _parse_snr(getattr(args, "snr", ""))
+    noise_runs = None
+    if snr_list:
+        noise_runs = [("clean", summary)]
+        for snr in snr_list:
+            noisy_feats, noisy_texts = load_split(dev_manifest, sr=args.sr, snr_db=snr)
+            run = _paired_eval(
+                model, noisy_feats, noisy_texts, dev_words, args.decode, args.beam_size, args.lm_weight
+            )[0]
+            noise_runs.append((f"{snr:g} dB", run))
+
     report = build_report(
         summary,
         history,
@@ -92,6 +115,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         ),
         reference_run=reference,
         speaker_runs=speaker_runs if unseen_manifest is not None else None,
+        noise_runs=noise_runs,
     )
     path = write_report(report, out, name="echolens")
     if not args.quiet:
@@ -99,6 +123,8 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         print(f"对照:    {_fmt_per(reference)}")
         if unseen_manifest is not None:
             print(f"未见音色: {_fmt_per(speaker_runs[1][1])}")
+        for label, run in (noise_runs or [])[1:]:
+            print(f"噪声 {label}: {_fmt_per(run)}")
         print(f"checkpoint: {ckpt}")
         print(f"report: {path}")
     else:
@@ -137,7 +163,8 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     from .report import build_report, write_report
     from .train import load_checkpoint, load_split, load_words
 
-    feats, texts = load_split(args.manifest, root=args.root, sr=args.sr)
+    snr = _parse_snr(getattr(args, "snr", ""))
+    feats, texts = load_split(args.manifest, root=args.root, sr=args.sr, snr_db=snr[0] if snr else None)
     word_refs = load_words(args.manifest)
     model = load_checkpoint(args.checkpoint)
     summary, reference = _paired_eval(model, feats, texts, word_refs, args.decode, args.beam_size, args.lm_weight)
@@ -179,7 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--sr", type=int, default=8000)
     demo.add_argument("--seed", type=int, default=0)
     demo.add_argument("--speakers", type=int, default=4, help="进训练集的合成说话人数量（最多 8）")
-    demo.add_argument("--f0-jitter", type=float, default=0.06, help="训练集的音高增强幅度（0 表示不加）")
+    demo.add_argument(
+        "--f0-jitter", type=float, default=0.0, help="训练集的音高增强幅度（默认 0；见 README 的消融）"
+    )
+    demo.add_argument("--snr", default="20,10,0,-5", help="噪声扫描的信噪比（dB，逗号分隔；留空表示不扫）")
     _add_decode_args(demo, "beam")
     demo.add_argument("--quiet", action="store_true")
     demo.set_defaults(func=_cmd_demo)
@@ -204,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument("--out", default="out")
     eval_cmd.add_argument("--sr", type=int, default=8000)
     eval_cmd.add_argument("--notes", default="")
+    eval_cmd.add_argument("--snr", default="", help="只评测一档信噪比（dB），留空表示干净音频")
     _add_decode_args(eval_cmd, "greedy")
     eval_cmd.set_defaults(func=_cmd_eval)
 
