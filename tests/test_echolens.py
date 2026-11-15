@@ -68,7 +68,7 @@ class DataTest(unittest.TestCase):
             for line in lines:
                 self.assertTrue(line.startswith('{"audio": "audio/train-'))
             audio = Path(directory) / "audio"
-            self.assertEqual(len(list(audio.glob("*.wav")), 9)
+            self.assertEqual(len(list(audio.glob("*.wav"))), 9)
             # 文本是音素序列，空格分隔
             import json
 
@@ -218,7 +218,7 @@ class LanguageModelTest(unittest.TestCase):
     def test_lm_scores_are_finite_log_probs(self):
         lm = PhoneLM()
         self.assertLess(lm.score(list("suto")), 0.0)  # log 概率为负
-        self.assertTrue(np.isfinite(lm.score(list("xyz")))  # 未登录音素走平滑，不炸
+        self.assertTrue(np.isfinite(lm.score(list("xyz")))))  # 未登录音素走平滑，不炸
 
 
 class AlignTest(unittest.TestCase):
