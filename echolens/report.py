@@ -45,7 +45,7 @@ header { background: #fff; border: 1px solid var(--line); border-radius: 14px; p
 h1 { margin: 14px 0 6px; font-size: 26px; font-weight: 650; letter-spacing: -.01em; }
 .meta { margin: 0; color: var(--muted); font-size: 13px; }
 .notes { margin: 10px 0 0; font-size: 13px; color: #4a5568; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 12px; margin-top: 24px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 24px; }
 .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #fcfcfd; }
 .card .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .card .v { font-size: 20px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
@@ -117,9 +117,13 @@ def build_report(
     history: Sequence[Dict[str, float]],
     title: str = "echolens",
     notes: str = "",
-    max_rows: int = 10,
+    max_rows: int = 12,
+    reference_run: Dict[str, object] | None = None,
 ) -> str:
-    """组装 HTML 字符串。``summary`` 来自 :func:`echolens.train.evaluate`。"""
+    """组装 HTML 字符串。``summary`` 来自 :func:`echolens.train.evaluate`。
+
+    ``reference_run`` 给另一档解码的评测结果时，会多出一张"解码器对比"表。
+    """
     details = summary.get("details") or []
     details = list(details)
 
@@ -141,6 +145,10 @@ def build_report(
 
     cards = [
         ("phone err rate", f"{float(summary.get('error_rate', 0.0)):.3f}"),
+    ]
+    if "word_error_rate" in summary:
+        cards.append(("word err rate", f"{float(summary['word_error_rate']):.3f}"))
+    cards += [
         ("exact match", f"{float(summary.get('exact_match', 0.0)):.3f}"),
         ("samples", str(int(summary.get("samples", 0)) or len(details))),
         ("epochs", str(len(history))),
@@ -153,12 +161,24 @@ def build_report(
         charts.append(line_chart(x, {"train loss": [row["loss"] for row in history]}, "CTC loss", "loss"))
         charts.append(line_chart(x, {"dev PER": [row["dev_per"] for row in history]}, "Phone error rate", "PER"))
 
+    has_words = any("words" in row for row in shown)
+
+    def _word_cell(row) -> str:
+        words = row.get("words") or []
+        flags = row.get("word_flags") or []
+        if not words:
+            return ""
+        return " ".join(
+            f'<span class="{"sub" if bad else "ok"}">{html.escape(str(w))}</span>' for w, bad in zip(words, flags)
+        )
+
     rows_html = "".join(
         "<tr>"
         f'<td class="mono">{html.escape(" ".join(row["ref"]))}</td>'
         f'<td class="mono">{html.escape(" ".join(row["hyp"]) or "（空）")}</td>'
         f'<td class="mono">{diff_html(row["ops"])}</td>'
-        f"<td>{int(row['errors'])}</td>"
+        + (f'<td class="mono">{_word_cell(row)}</td>' if has_words else "")
+        + f"<td>{int(row['errors'])}</td>"
         "</tr>"
         for row in shown
     )
@@ -168,10 +188,16 @@ def build_report(
         for (ref, hyp), n in confusion.most_common(6)
     )
 
+    header_cells = "<th>reference</th><th>hypothesis</th><th>diff</th>"
+    if has_words:
+        header_cells += "<th>words</th>"
+    header_cells += "<th>err</th>"
+
     error_panel = (
         '<div class="panel">'
-        '<p class="note">按错误数从多到少排。diff 里绿色是识别正确，红色是替换或漏识，蓝色是凭空多出来的音素。</p>'
-        "<table><thead><tr><th>reference</th><th>hypothesis</th><th>diff</th><th>err</th></tr></thead>"
+        '<p class="note">按错误数从多到少排。diff 里绿色是识别正确，红色是替换或漏识，蓝色是凭空多出来的音素；'
+        "words 列按参考词边界标出哪个词整词出错。</p>"
+        f"<table><thead><tr>{header_cells}</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
         "</div>"
     )
@@ -188,6 +214,27 @@ def build_report(
         + "</div>"
     )
 
+    compare_panel = ""
+    if reference_run is not None:
+
+        def _run_row(run: Dict[str, object]) -> str:
+            wer = run.get("word_error_rate")
+            wer_text = f"{float(wer):.3f}" if wer is not None else "—"
+            return (
+                f"<tr><td>{html.escape(str(run.get('decoder', '?')))}</td>"
+                f"<td>{float(run.get('error_rate', 0.0)):.3f}</td>"
+                f"<td>{wer_text}</td>"
+                f"<td>{float(run.get('exact_match', 0.0)):.3f}</td></tr>"
+            )
+
+        compare_panel = (
+            '<div class="panel">'
+            '<p class="note">同一个 checkpoint，只换解码方式。beam 相对 greedy 的下降就是它真实的收益。</p>'
+            "<table><thead><tr><th>decoder</th><th>PER</th><th>WER</th><th>exact</th></tr></thead>"
+            f"<tbody>{_run_row(reference_run)}{_run_row(summary)}</tbody></table>"
+            "</div>"
+        )
+
     body = []
     if charts:
         body.append(
@@ -195,6 +242,9 @@ def build_report(
             + "".join(f'<div class="panel"><img alt="{t}" src="data:image/png;base64,{c}"></div>' for t, c in zip(["loss", "per"], charts))
             + "</div></section>"
         )
+    if reference_run is not None:
+        body.append(f"<section><h2>Decoder comparison</h2>{compare_panel}</section>")
+
     body.append(f"<section><h2>Per-sample errors</h2>{error_panel}</section>")
     body.append(f"<section><h2>Error breakdown</h2>{summary_panel}</section>")
 
