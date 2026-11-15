@@ -146,6 +146,7 @@ class SpeakerTest(unittest.TestCase):
         s4 = synth_word("kato", seed=5, speaker="s4")
         shorter = min(len(s1), len(s4))
         self.assertFalse(np.allclose(s1[:shorter], s4[:shorter]))
+
         # 谱重心也拉开了：高基频说话人在高频段能量占比更高
         def centroid(wave):
             spectrum = np.abs(np.fft.rfft(wave[: len(wave) // 2]))
@@ -359,6 +360,38 @@ class ReportTest(unittest.TestCase):
         html = build_report(summary, [])
         self.assertIn('<span class="ok">kato</span>', html)
         self.assertIn('<span class="sub">suto</span>', html)
+
+
+class NoiseAugmentTest(unittest.TestCase):
+    def test_augment_copies_the_training_set_once_per_tier(self):
+        # 加噪是"同一批标签、多几份带噪波形"：档数 + 1 倍数据量，干净那份排在最前面
+        from echolens.cli import _augment
+
+        with tempfile.TemporaryDirectory() as directory:
+            train, _ = synth_dataset(directory, n_train=6, n_dev=2, seed=3)
+            feats = [np.zeros((10, 40), dtype=np.float32) for _ in range(6)]
+            texts = [["k", "a"] for _ in range(6)]
+            noisy_feats, noisy_texts = _augment(feats, texts, train, [10.0, 0.0], 8000)
+        self.assertEqual(len(noisy_feats), 18)
+        self.assertEqual(len(noisy_texts), 18)
+        self.assertEqual(noisy_texts[:6], texts)
+
+    def test_report_puts_two_noise_curves_side_by_side(self):
+        summary = evaluation_stub()
+        summary["word_error_rate"] = 0.2
+        loud = dict(summary)
+        loud["error_rate"] = 0.6
+        html = build_report(
+            summary,
+            [],
+            noise_compare=[
+                ("clean-trained", [("clean", summary), ("0 dB", loud)]),
+                ("noise-augmented", [("clean", summary), ("0 dB", summary)]),
+            ],
+        )
+        self.assertIn("Noise augmentation", html)
+        self.assertIn("clean-trained PER", html)
+        self.assertIn("noise-augmented PER", html)
 
 
 def evaluation_stub():
