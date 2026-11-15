@@ -15,10 +15,10 @@ from torch import nn
 
 from .audio import log_mel, read_wav, resample
 from .data import read_manifest
-from .metrics import corpus_error_rate, error_rate, greedy_decode
+from .metrics import beam_search_decode, corpus_error_rate, error_rate, greedy_decode, word_error_rate
 from .model import BLANK, CTCNet, TOKENS, model_out_lengths, token_to_id
 
-__all__ = ["load_split", "train", "evaluate", "save_checkpoint", "load_checkpoint"]
+__all__ = ["load_split", "load_words", "train", "evaluate", "save_checkpoint", "load_checkpoint"]
 
 
 def load_split(
@@ -44,6 +44,26 @@ def load_split(
 
 def _encode(tokens: Sequence[str]) -> List[int]:
     return [token_to_id[t] for t in tokens]
+
+
+def load_words(manifest: str | Path) -> List[List[str]]:
+    """读 manifest 里的词序列，用来算词错误率。
+
+    有 ``words`` 字段就用它；没有就退回 ``text`` 里的 ``|`` 分隔；连分隔符都没有时
+    整句算一个词——宁可报个粗的 WER，也不假装知道词边界。
+    """
+    out: List[List[str]] = []
+    for item in read_manifest(manifest):
+        words = item.get("words")
+        if isinstance(words, list) and words and all(isinstance(w, str) for w in words):
+            out.append([str(w) for w in words])
+            continue
+        text = str(item["text"])
+        if "|" in text:
+            out.append([w.strip() for w in text.split("|") if w.strip()])
+        else:
+            out.append(["".join(text.split())])
+    return out
 
 
 def _make_batch(indices: Sequence[int], feats: Sequence[np.ndarray], texts: Sequence[Sequence[str]]):
@@ -141,23 +161,50 @@ def evaluate(
     model: CTCNet,
     feats: Sequence[np.ndarray],
     texts: Sequence[Sequence[str]],
+    decode: str = "greedy",
+    beam: int = 10,
+    word_refs: Sequence[Sequence[str]] | None = None,
 ) -> Dict[str, object]:
-    """评测并返回汇总 + 每句细节（参考、识别、对齐操作）。"""
+    """评测并返回汇总 + 每句细节（参考、识别、对齐操作）。
+
+    ``decode`` 取 ``"greedy"`` 或 ``"beam"``；给了 ``word_refs`` 就顺便算词错误率。
+    """
     model.eval()
     details: List[Dict[str, object]] = []
 
-    for feat, ref in zip(feats, texts):
+    for index, (feat, ref) in enumerate(zip(feats, texts)):
         x = torch.from_numpy(feat[None, ...])
         lengths = torch.tensor([feat.shape[0]], dtype=torch.long)
-        logits = model(x, lengths)
-        ids = greedy_decode(logits[0].argmax(dim=-1).tolist(), blank=BLANK)
+        log_probs = model(x, lengths)[0].log_softmax(dim=-1)
+
+        if decode == "greedy":
+            ids = greedy_decode(log_probs.argmax(dim=-1).tolist(), blank=BLANK)
+        elif decode == "beam":
+            ids = beam_search_decode(log_probs.numpy(), beam=beam, blank=BLANK)
+        else:
+            raise ValueError(f"未知的解码方式: {decode}")
+
         hyp = [TOKENS[i - 1] for i in ids if 1 <= i <= len(TOKENS)]
         err, _, ops = error_rate(ref, hyp)
-        details.append({"ref": list(ref), "hyp": hyp, "errors": err, "ops": ops})
+        row: Dict[str, object] = {"ref": list(ref), "hyp": hyp, "errors": err, "ops": ops}
+        if word_refs is not None:
+            word_errors, word_total, word_flags = word_error_rate(word_refs[index], ops)
+            row["words"] = list(word_refs[index])
+            row["word_errors"] = word_errors
+            row["word_total"] = word_total
+            row["word_flags"] = word_flags
+        details.append(row)
 
     pairs = [(d["ref"], d["hyp"]) for d in details]
     summary = corpus_error_rate(pairs)
+    summary["decoder"] = decode
     summary["details"] = details
+    if word_refs is not None:
+        bad = sum(int(d["word_errors"]) for d in details)
+        total = sum(int(d["word_total"]) for d in details)
+        summary["word_error_rate"] = (bad / total) if total else 0.0
+        summary["word_errors"] = float(bad)
+        summary["words"] = float(total)
     return summary
 
 
