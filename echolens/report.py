@@ -119,6 +119,7 @@ def build_report(
     notes: str = "",
     max_rows: int = 12,
     reference_run: Dict[str, object] | None = None,
+    speaker_runs: Sequence[Tuple[str, Dict[str, object]]] | None = None,
 ) -> str:
     """组装 HTML 字符串。``summary`` 来自 :func:`echolens.train.evaluate`。
 
@@ -214,25 +215,37 @@ def build_report(
         + "</div>"
     )
 
+    def _cmp_row(label: str, run: Dict[str, object]) -> str:
+        wer = run.get("word_error_rate")
+        wer_text = f"{float(wer):.3f}" if wer is not None else "—"
+        return (
+            f"<tr><td>{html.escape(label)}</td>"
+            f"<td>{float(run.get('error_rate', 0.0)):.3f}</td>"
+            f"<td>{wer_text}</td>"
+            f"<td>{float(run.get('exact_match', 0.0)):.3f}</td></tr>"
+        )
+
     compare_panel = ""
     if reference_run is not None:
-
-        def _run_row(run: Dict[str, object]) -> str:
-            wer = run.get("word_error_rate")
-            wer_text = f"{float(wer):.3f}" if wer is not None else "—"
-            return (
-                f"<tr><td>{html.escape(str(run.get('decoder', '?')))}</td>"
-                f"<td>{float(run.get('error_rate', 0.0)):.3f}</td>"
-                f"<td>{wer_text}</td>"
-                f"<td>{float(run.get('exact_match', 0.0)):.3f}</td></tr>"
-            )
-
         compare_panel = (
             '<div class="panel">'
             '<p class="note">同一个 checkpoint，只换解码方式。beam 相对 greedy 的下降就是它真实的收益。</p>'
             "<table><thead><tr><th>decoder</th><th>PER</th><th>WER</th><th>exact</th></tr></thead>"
-            f"<tbody>{_run_row(reference_run)}{_run_row(summary)}</tbody></table>"
+            f"<tbody>{_cmp_row(str(reference_run.get('decoder', '?')), reference_run)}"
+            f"{_cmp_row(str(summary.get('decoder', '?')), summary)}</tbody>"
+            "</table>"
             "</div>"
+        )
+
+    speaker_panel = ""
+    if speaker_runs:
+        speaker_panel = (
+            '<div class="panel">'
+            '<p class="note">训练集里出现的音色 vs 从没进过训练的音色。两行的差就是跨说话人泛化的代价。</p>'
+            "<table><thead><tr><th>group</th><th>PER</th><th>WER</th><th>exact</th></tr></thead>"
+            "<tbody>"
+            + "".join(_cmp_row(label, run) for label, run in speaker_runs)
+            + "</tbody></table></div>"
         )
 
     body = []
@@ -244,6 +257,9 @@ def build_report(
         )
     if reference_run is not None:
         body.append(f"<section><h2>Decoder comparison</h2>{compare_panel}</section>")
+
+    if speaker_panel:
+        body.append(f"<section><h2>Speaker generalisation</h2>{speaker_panel}</section>")
 
     body.append(f"<section><h2>Per-sample errors</h2>{error_panel}</section>")
     body.append(f"<section><h2>Error breakdown</h2>{summary_panel}</section>")
