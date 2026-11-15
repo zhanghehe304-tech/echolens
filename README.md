@@ -52,11 +52,11 @@ echolens demo --epochs 6 --n-train 60 --n-dev 12
 5. **测评**（`echolens/metrics.py`）。两档解码：贪心（合并重复、去 blank）与 CTC 前缀 beam search（每帧只展开 top-4，按总概率裁到 `beam` 条）。都用同一套编辑距离 DP 回溯出 match / sub / del / ins；PER 按参考音素总数加权，WER 按参考词边界切分对齐结果——一个词内出现替换/漏识/多识，就记这个词错。
 6. **报告**（`echolens/report.py`）。matplotlib Agg 出图 + base64 内联；指标卡含 PER / WER / exact / 样本数 / 轮数 / 用时；Decoder comparison 表并列两档解码；每句一行 `reference` / `hypothesis` / `diff` / `words` / `err`，diff 里绿色正确、红色替换或漏识、蓝色凭空多出音素，words 列按参考词边界标出整词出错的词。
 
-## 两个值得拄下来的细节
+## 两个值得抄下来的细节
 
 **一、stride 设错，模型只背训练集。** 第一版两段卷积都用了 stride=2，总降采样 4 倍。一个音素只有 120 ms，4 倍降采样后只剩两三帧，CTC 学不准对齐：训练集 loss 能降到 0.03，但 dev PER 卡在 0.325，exact 只有 0.233——模型把训练样本背下来了，没学到对齐。把第二段卷积 stride 改成 1（总降采样 2 倍）之后 dev PER 直接到 0.044。`model.py` 的 `model_out_lengths()` 与 `train.py` 的 `_make_batch()` 都只做一次 `(L-1)//2+1`，两边口径必须一致：长度算错不会报错，只会不收敛。
 
-**二、beam 的收益取决于模型有多不确定。** 同一份代码、同一个 checkpoint：25 轮（还没收敛）时 greedy PER 0.386、beam 0.255，beam 拿回三成错误；60 轮收敛后 greedy 0.050、beam 0.045，只差一个音素级。这是 beam 的典型行为——模型每帧都很有把握时，它和 argmax 几乎重合；模型猧豫时，它才把"该选次优帧"的错误纠回来。报告里那张对比表就是给这件事留的证据，不是装饰。
+**二、beam 的收益取决于模型有多不确定。** 同一份代码、同一个 checkpoint：25 轮（还没收敛）时 greedy PER 0.386、beam 0.255，beam 拿回三成错误；60 轮收敛后 greedy 0.050、beam 0.045，只差一个音素级。这是 beam 的典型行为——模型每帧都很有把握时，它和 argmax 几乎重合；模型犹豫时，它才把"该选次优帧"的错误纠回来。报告里那张对比表就是给这件事留的证据，不是装饰。
 
 ## 解码方式与说话人
 
