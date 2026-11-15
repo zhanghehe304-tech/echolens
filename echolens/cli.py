@@ -44,6 +44,35 @@ def _parse_snr(text: str) -> list[float]:
     return out
 
 
+def _augment(feats, texts, manifest, tiers, sr: int):
+    """训练集加噪：干净数据 + 每档 SNR 各复制一份，标签不动。
+
+    这是最朴素的数据增强：同一个标签下多几份"被噪声盖住"的波形，模型才有机会
+    学到噪声下的共振峰长什么样。它把训练集乘以 (档数 + 1)，轮数不变就贵了几倍。
+    """
+    from .train import load_split
+
+    all_feats = list(feats)
+    all_texts = list(texts)
+    for snr in tiers:
+        noisy_feats, noisy_texts = load_split(manifest, sr=sr, snr_db=snr)
+        all_feats.extend(noisy_feats)
+        all_texts.extend(noisy_texts)
+    return all_feats, all_texts
+
+
+def _noise_sweep(model, manifest, word_refs, args, snr_list) -> list[tuple[str, dict]]:
+    """在开发集波形上按各档 SNR 混白噪，逐档评一遍（不含 clean 那一行）。"""
+    from .train import load_split
+
+    runs: list[tuple[str, dict]] = []
+    for snr in snr_list:
+        feats, texts = load_split(manifest, sr=args.sr, snr_db=snr)
+        run = _paired_eval(model, feats, texts, word_refs, args.decode, args.beam_size, args.lm_weight)[0]
+        runs.append((f"{snr:g} dB", run))
+    return runs
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     from .data import SPEAKERS, synth_dataset
     from .report import build_report, write_report
@@ -70,6 +99,28 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     feats, texts = load_split(train_manifest, sr=args.sr)
     dev_feats, dev_texts = load_split(dev_manifest, sr=args.sr)
     dev_words = load_words(dev_manifest)
+    snr_list = _parse_snr(getattr(args, "snr", ""))
+    aug_tiers = _parse_snr(getattr(args, "noise_aug", ""))
+
+    # 要出"加噪 vs 不加噪"的对照表，就得先有一个同配置的干净模型当基线；
+    # 否则拿别的 checkpoint 的曲线来比，等于换了个模型还假装只换了数据
+    noise_compare = None
+    if aug_tiers and snr_list:
+        base_model, _ = train(
+            feats, texts, dev_feats, dev_texts, epochs=args.epochs, seed=args.seed, verbose=False
+        )
+        base_clean, _ = _paired_eval(
+            base_model, dev_feats, dev_texts, dev_words, args.decode, args.beam_size, args.lm_weight
+        )
+        base_runs = [("clean", base_clean)] + _noise_sweep(
+            base_model, dev_manifest, dev_words, args, snr_list
+        )
+        noise_compare = [("clean-trained", base_runs)]
+        n_clean = len(feats)
+        feats, texts = _augment(feats, texts, train_manifest, aug_tiers, args.sr)
+        if not args.quiet:
+            tiers = ", ".join(f"{t:g} dB" for t in aug_tiers)
+            print(f"训练集加噪 {tiers}: {n_clean} 句 -> {len(feats)} 句")
 
     model, history = train(
         feats, texts, dev_feats, dev_texts, epochs=args.epochs, seed=args.seed, verbose=not args.quiet
@@ -94,16 +145,12 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
     ckpt = save_checkpoint(model, out / "echolens.pt")
 
-    snr_list = _parse_snr(getattr(args, "snr", ""))
     noise_runs = None
     if snr_list:
-        noise_runs = [("clean", summary)]
-        for snr in snr_list:
-            noisy_feats, noisy_texts = load_split(dev_manifest, sr=args.sr, snr_db=snr)
-            run = _paired_eval(
-                model, noisy_feats, noisy_texts, dev_words, args.decode, args.beam_size, args.lm_weight
-            )[0]
-            noise_runs.append((f"{snr:g} dB", run))
+        noise_runs = [("clean", summary)] + _noise_sweep(model, dev_manifest, dev_words, args, snr_list)
+        if noise_compare is not None:
+            label = "noise-augmented" if aug_tiers else "clean-trained"
+            noise_compare.append((label, noise_runs))
 
     report = build_report(
         summary,
@@ -116,6 +163,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         reference_run=reference,
         speaker_runs=speaker_runs if unseen_manifest is not None else None,
         noise_runs=noise_runs,
+        noise_compare=noise_compare,
     )
     path = write_report(report, out, name="echolens")
     if not args.quiet:
@@ -210,6 +258,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--f0-jitter", type=float, default=0.0, help="训练集的音高增强幅度（默认 0；见 README 的消融）"
     )
     demo.add_argument("--snr", default="20,10,0,-5", help="噪声扫描的信噪比（dB，逗号分隔；留空表示不扫）")
+    demo.add_argument(
+        "--noise-aug",
+        default="",
+        help="训练集加噪的档位（dB，逗号分隔；留空表示不加）。给了就先训一个干净基线当对照",
+    )
     _add_decode_args(demo, "beam")
     demo.add_argument("--quiet", action="store_true")
     demo.set_defaults(func=_cmd_demo)
