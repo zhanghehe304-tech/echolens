@@ -19,7 +19,7 @@ from .model import BLANK, TOKENS, CTCNet
 from .report import build_report, write_report
 from .train import evaluate, load_checkpoint, load_split, load_words, save_checkpoint, train
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "F0_BASE",
