@@ -376,6 +376,34 @@ class NoiseAugmentTest(unittest.TestCase):
         self.assertEqual(len(noisy_texts), 18)
         self.assertEqual(noisy_texts[:6], texts)
 
+    def test_random_tier_samples_one_snr_per_utterance(self):
+        # 随机加噪：每句各自采一档 SNR；同一 seed 可复现，换一份噪声就不同
+        from echolens.train import load_split
+
+        with tempfile.TemporaryDirectory() as directory:
+            train, _ = synth_dataset(directory, n_train=4, n_dev=2, seed=5)
+            clean, _ = load_split(train, sr=8000)
+            first, _ = load_split(train, sr=8000, snr_range=(0.0, 20.0), seed=0)
+            again, _ = load_split(train, sr=8000, snr_range=(0.0, 20.0), seed=0)
+            other, _ = load_split(train, sr=8000, snr_range=(0.0, 20.0), seed=1)
+        for a, b, c, d in zip(first, again, other, clean):
+            self.assertTrue(np.allclose(a, b))
+            self.assertFalse(np.allclose(a, c))
+            self.assertFalse(np.allclose(a, d))
+
+    def test_augment_handles_random_tiers(self):
+        from echolens.cli import _augment
+
+        with tempfile.TemporaryDirectory() as directory:
+            train, _ = synth_dataset(directory, n_train=6, n_dev=2, seed=3)
+            feats = [np.zeros((10, 40), dtype=np.float32) for _ in range(6)]
+            texts = [["k", "a"] for _ in range(6)]
+            noisy_feats, noisy_texts = _augment(
+                feats, texts, train, [], 8000, range_tier=(0.0, 20.0), copies=2
+            )
+        self.assertEqual(len(noisy_feats), 18)
+        self.assertEqual(len(noisy_texts), 18)
+
     def test_report_puts_two_noise_curves_side_by_side(self):
         summary = evaluation_stub()
         summary["word_error_rate"] = 0.2
