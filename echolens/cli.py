@@ -34,7 +34,7 @@ def _fmt_per(summary) -> str:
 
 
 def _parse_snr(text: str) -> list[float]:
-    """把 ``"20,10,0,-5"`` 解析成一串信噪比；空串表示不做噪声扇描。"""
+    """把 ``"20,10,0,-5"`` 解析成一串信噪比；空串表示不做噪声扫描。"""
     out: list[float] = []
     for piece in str(text or "").replace("；", ",").split(","):
         piece = piece.strip()
