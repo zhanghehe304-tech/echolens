@@ -13,7 +13,8 @@
 ```bash
 pip install -e .
 echolens demo                             # 默认：干净训练，约 2 分钟
-echolens demo --noise-aug 20,10,0         # 训练集加噪，先训一个干净基线做对照，约 10 分钟
+echolens demo --noise-aug 20,10,0         # 训练集加噪（固定三档），先训一个干净基线做对照，约 10 分钟
+echolens demo --noise-aug-random 0,20     # 训练集随机加噪（每句在 0–20 dB 采一档，×3），约 11 分钟
 ```
 
 跑完后：
