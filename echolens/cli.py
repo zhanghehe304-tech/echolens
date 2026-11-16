@@ -34,7 +34,7 @@ def _fmt_per(summary) -> str:
 
 
 def _parse_snr(text: str) -> list[float]:
-    """把 ``"20,10,0,-5"`` 解析成一串信噪比；空串表示不做噪声扫描。"""
+    """把 ``"20,10,0,-5"`` 解析成一串信噪比；空串表示不做噪声扇描。"""
     out: list[float] = []
     for piece in str(text or "").replace("；", ",").split(","):
         piece = piece.strip()
@@ -44,11 +44,12 @@ def _parse_snr(text: str) -> list[float]:
     return out
 
 
-def _augment(feats, texts, manifest, tiers, sr: int):
+def _augment(feats, texts, manifest, tiers, sr: int, range_tier=None, copies: int = 0):
     """训练集加噪：干净数据 + 每档 SNR 各复制一份，标签不动。
 
     这是最朴素的数据增强：同一个标签下多几份"被噪声盖住"的波形，模型才有机会
     学到噪声下的共振峰长什么样。它把训练集乘以 (档数 + 1)，轮数不变就贵了几倍。
+    ``range_tier`` 给的是 (low, high)：每句各自采一个信噪比，采 ``copies`` 份。
     """
     from .train import load_split
 
@@ -58,7 +59,25 @@ def _augment(feats, texts, manifest, tiers, sr: int):
         noisy_feats, noisy_texts = load_split(manifest, sr=sr, snr_db=snr)
         all_feats.extend(noisy_feats)
         all_texts.extend(noisy_texts)
+    if range_tier is not None:
+        for pass_index in range(copies):
+            noisy_feats, noisy_texts = load_split(
+                manifest, sr=sr, snr_range=range_tier, seed=pass_index
+            )
+            all_feats.extend(noisy_feats)
+            all_texts.extend(noisy_texts)
     return all_feats, all_texts
+
+
+def _parse_range(text: str):
+    """把 ``"0,20"`` 解析成 (0.0, 20.0)；空串表示不做随机加噪。"""
+    parts = [p.strip() for p in str(text or "").replace("；", ",").split(",") if p.strip()]
+    if len(parts) != 2:
+        return None
+    low, high = float(parts[0]), float(parts[1])
+    if low > high:
+        low, high = high, low
+    return (low, high)
 
 
 def _noise_sweep(model, manifest, word_refs, args, snr_list) -> list[tuple[str, dict]]:
@@ -101,11 +120,14 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     dev_words = load_words(dev_manifest)
     snr_list = _parse_snr(getattr(args, "snr", ""))
     aug_tiers = _parse_snr(getattr(args, "noise_aug", ""))
+    aug_range = _parse_range(getattr(args, "noise_aug_random", ""))
+    aug_copies = int(getattr(args, "noise_aug_copies", 3)) if aug_range else 0
 
     # 要出"加噪 vs 不加噪"的对照表，就得先有一个同配置的干净模型当基线；
     # 否则拿别的 checkpoint 的曲线来比，等于换了个模型还假装只换了数据
     noise_compare = None
-    if aug_tiers and snr_list:
+    aug_label = ""
+    if (aug_tiers or aug_range) and snr_list:
         base_model, _ = train(
             feats, texts, dev_feats, dev_texts, epochs=args.epochs, seed=args.seed, verbose=False
         )
@@ -117,10 +139,16 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         )
         noise_compare = [("clean-trained", base_runs)]
         n_clean = len(feats)
-        feats, texts = _augment(feats, texts, train_manifest, aug_tiers, args.sr)
+        if aug_tiers:
+            aug_label = "aug " + "/".join(f"{t:g}" for t in aug_tiers) + " dB"
+        if aug_range:
+            piece = f"aug {aug_range[0]:g}–{aug_range[1]:g} dB ×{aug_copies}"
+            aug_label = f"{aug_label} + {piece}" if aug_label else piece
+        feats, texts = _augment(
+            feats, texts, train_manifest, aug_tiers, args.sr, range_tier=aug_range, copies=aug_copies
+        )
         if not args.quiet:
-            tiers = ", ".join(f"{t:g} dB" for t in aug_tiers)
-            print(f"训练集加噪 {tiers}: {n_clean} 句 -> {len(feats)} 句")
+            print(f"训练集加噪 {aug_label}: {n_clean} 句 -> {len(feats)} 句")
 
     model, history = train(
         feats, texts, dev_feats, dev_texts, epochs=args.epochs, seed=args.seed, verbose=not args.quiet
@@ -149,7 +177,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     if snr_list:
         noise_runs = [("clean", summary)] + _noise_sweep(model, dev_manifest, dev_words, args, snr_list)
         if noise_compare is not None:
-            label = "noise-augmented" if aug_tiers else "clean-trained"
+            label = aug_label or ("noise-augmented" if aug_tiers else "clean-trained")
             noise_compare.append((label, noise_runs))
 
     report = build_report(
@@ -262,6 +290,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--noise-aug",
         default="",
         help="训练集加噪的档位（dB，逗号分隔；留空表示不加）。给了就先训一个干净基线当对照",
+    )
+    demo.add_argument(
+        "--noise-aug-random",
+        default="",
+        help="训练集随机加噪的信噪比区间（dB，如 0,20：每句各自采一档）。给了就先训一个干净基线",
+    )
+    demo.add_argument(
+        "--noise-aug-copies",
+        type=int,
+        default=3,
+        help="--noise-aug-random 复制几份（默认 3，与固定三档的倍数对齐）",
     )
     _add_decode_args(demo, "beam")
     demo.add_argument("--quiet", action="store_true")
