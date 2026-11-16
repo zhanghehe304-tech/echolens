@@ -35,11 +35,15 @@ def load_split(
     sr: int = 8000,
     n_mels: int = 40,
     snr_db: float | None = None,
+    snr_range: tuple[float, float] | None = None,
+    seed: int = 0,
 ) -> Tuple[List[np.ndarray], List[List[str]]]:
     """读 manifest，返回 (特征列表, 音素序列列表)。相对路径默认相对 manifest 所在目录。
 
     给了 ``snr_db`` 就在提特征之前按该信噪比混白噪——噪声鲁棒性扫描走这条路，
-    保证除了噪声之外每一步都和干净条件下完全一样。
+    保证除了噪声之外每一步都和干净条件下完全一样。给 ``snr_range`` 则逐句在
+    [low, high] 里均匀采一个信噪比（同一个 ``seed`` + 句序号决定这一句采到多少），
+    这是训练时随机加噪用的那套，评测仍然走固定的 ``snr_db``。
     """
     manifest = Path(manifest)
     base = Path(root) if root is not None else manifest.parent
@@ -52,6 +56,10 @@ def load_split(
         wave = resample(wave, rate, sr)
         if snr_db is not None:
             wave = add_noise(wave, snr_db, seed=index)
+        elif snr_range is not None:
+            low, high = snr_range
+            rng = np.random.default_rng((seed + 1) * 1_000_003 + index)
+            wave = add_noise(wave, float(rng.uniform(low, high)), seed=index)
         feats.append(log_mel(wave, sr=sr, n_mels=n_mels))
         texts.append([t for t in str(item["text"]).replace("|", " ").split() if t])
     return feats, texts
