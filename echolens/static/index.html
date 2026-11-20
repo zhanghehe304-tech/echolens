@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>echolens · 本地识别台</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">echo<b>lens</b><span class="tag">本地识别台</span></div>
+  <div class="stat" id="headerStat">连接中…</div>
+</header>
+
+<main>
+  <aside class="panel">
+    <div class="tabs">
+      <button class="tab on" data-mode="synth" id="tabSynth">合成一句</button>
+      <button class="tab" data-mode="pcm" id="tabPcm">上传音频</button>
+    </div>
+
+    <div id="synthBox">
+      <label class="field">
+        <span>说话人</span>
+        <select id="speaker"></select>
+      </label>
+      <div class="field">
+        <span>词（最多两个）</span>
+        <div class="chips" id="wordChips"></div>
+      </div>
+      <div class="pair">
+        <label class="field"><span>种子</span><input id="seed" type="number" min="0" step="1" value="0"></label>
+        <label class="field"><span>背景噪声</span><select id="snr"></select></label>
+      </div>
+      <button class="go" id="goSynth">合成并识别</button>
+      <p class="hint">参考音素就是词里的字母，模型只认这 10 个。换种子会换语速、音量与音高起伏，同一组参数结果稳定可复现。</p>
+    </div>
+
+    <div id="pcmBox" hidden>
+      <label class="field">
+        <span>音频文件（≤ 20 秒）</span>
+        <input id="file" type="file" accept="audio/*">
+      </label>
+      <button class="go" id="goPcm">识别这段音频</button>
+      <p class="hint">浏览器会先把它重采样到 8 kHz，再交给模型。词表只有 a i u e o k t s m r，真实录音大概率对不上——这里只保证"模型怎么判"是透明的。</p>
+    </div>
+
+    <p class="hint foot" id="footHint"></p>
+  </aside>
+
+  <section class="results">
+    <div class="empty" id="empty">
+      <div class="emptyTitle">还没有识别结果</div>
+      <div class="emptyText">右边选说话人和一两个词，点「合成并识别」。想听噪声下的表现，把「背景噪声」换到 0 dB 或 −5 dB。</div>
+    </div>
+
+    <div class="grid" id="grid" hidden>
+      <div class="card">
+        <div class="head"><span>波形与音素分段</span><span class="dim" id="durLabel">—</span></div>
+        <canvas id="wave" width="980" height="142"></canvas>
+        <audio id="player" controls preload="auto"></audio>
+      </div>
+
+      <div class="card">
+        <div class="head"><span>三档解码</span><span class="dim" id="costLabel">—</span></div>
+        <div class="runs" id="runs"></div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span>对齐：参考 vs 识别</span><span class="dim">sub 替换 · del 漏识 · ins 多识</span></div>
+        <div class="alignSummary" id="alignSummary"></div>
+        <div class="align" id="align"></div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span>逐帧后验</span><span class="dim" id="heatLabel">—</span></div>
+        <canvas id="heat" width="980" height="252"></canvas>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
