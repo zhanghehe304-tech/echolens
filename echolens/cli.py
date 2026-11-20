@@ -1,4 +1,4 @@
-"""echolens 的命令行入口：``echolens demo`` / ``train`` / ``eval`` / ``app``。"""
+"""echolens 的命令行入口：``echolens demo`` / ``train`` / ``eval``。"""
 
 from __future__ import annotations
 
