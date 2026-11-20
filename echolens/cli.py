@@ -1,4 +1,4 @@
-"""echolens 的命令行入口：``echolens demo`` / ``train`` / ``eval``。"""
+"""echolens 的命令行入口：``echolens demo`` / ``train`` / ``eval`` / ``app``。"""
 
 from __future__ import annotations
 
@@ -261,6 +261,19 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_app(args: argparse.Namespace) -> int:
+    from .app import serve
+
+    serve(
+        args.checkpoint,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+        sr=args.sr,
+    )
+    return 0
+
+
 def _add_decode_args(parser: argparse.ArgumentParser, default: str) -> None:
     parser.add_argument(
         "--decode", choices=["greedy", "beam", "beam+lm"], default=default, help="主结果用哪种解码"
@@ -329,6 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument("--snr", default="", help="只评测一档信噪比（dB），留空表示干净音频")
     _add_decode_args(eval_cmd, "greedy")
     eval_cmd.set_defaults(func=_cmd_eval)
+
+    app_cmd = sub.add_parser("app", help="本地浏览器界面：合成或上传一句话，看三档解码与逐帧后验")
+    app_cmd.add_argument("--checkpoint", default="out/echolens.pt")
+    app_cmd.add_argument("--host", default="127.0.0.1")
+    app_cmd.add_argument("--port", type=int, default=8765)
+    app_cmd.add_argument("--sr", type=int, default=8000)
+    app_cmd.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    app_cmd.set_defaults(func=_cmd_app)
 
     return parser
 
