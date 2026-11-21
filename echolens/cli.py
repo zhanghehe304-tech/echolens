@@ -274,6 +274,54 @@ def _cmd_app(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_transcribe(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .transcribe import TranscriptionError, format_srt, make_transcriber
+
+    try:
+        transcriber = make_transcriber(
+            args.engine,
+            model=args.model,
+            language=args.language or None,
+            device=args.device,
+            compute_type=args.compute_type,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            prompt=args.prompt,
+            vad=not args.no_vad,
+            simplified=args.simplified,
+        )
+        result = transcriber.transcribe(args.audio)
+    except TranscriptionError as exc:
+        print(f"转写失败: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(_json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(result.text)
+        if not args.quiet:
+            print(
+                f"[{result.engine}] {result.language or '?'} · {len(result.segments)} 段 · "
+                f"{(result.duration or 0.0):.1f} s",
+                file=sys.stderr,
+            )
+
+    if args.out:
+        out = Path(args.out)
+        suffix = out.suffix.lower()
+        if suffix == ".json":
+            out.write_text(_json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        elif suffix in (".srt", ".vtt"):
+            out.write_text(format_srt(result), encoding="utf-8")
+        else:
+            out.write_text(result.text + "\n", encoding="utf-8")
+        if not args.quiet:
+            print(f"写到 {out}", file=sys.stderr)
+    return 0
+
+
 def _add_decode_args(parser: argparse.ArgumentParser, default: str) -> None:
     parser.add_argument(
         "--decode", choices=["greedy", "beam", "beam+lm"], default=default, help="主结果用哪种解码"
@@ -350,6 +398,25 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--sr", type=int, default=8000)
     app_cmd.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     app_cmd.set_defaults(func=_cmd_app)
+
+    asr_cmd = sub.add_parser(
+        "transcribe", help="真实录音转文字：本地 faster-whisper 或 OpenAI 兼容接口"
+    )
+    asr_cmd.add_argument("audio", help="音频文件（wav / mp3 / m4a / flac 等）")
+    asr_cmd.add_argument("--engine", choices=["whisper", "api"], default="whisper", help="本地模型还是远程接口")
+    asr_cmd.add_argument("--model", default=None, help="whisper 默认 small；api 默认 whisper-1")
+    asr_cmd.add_argument("--language", default="", help="语言代码（zh / en / …），留空自动识别")
+    asr_cmd.add_argument("--device", default="cpu", help="本地引擎的设备：cpu / cuda")
+    asr_cmd.add_argument("--compute-type", default="int8", help="本地引擎的量化类型：int8 / float32")
+    asr_cmd.add_argument("--no-vad", action="store_true", help="关掉静音切分")
+    asr_cmd.add_argument("--base-url", default="https://api.openai.com/v1", help="api 引擎的接口地址")
+    asr_cmd.add_argument("--api-key", default=None, help="api 引擎的密钥；也可用环境变量 ECHOLENS_ASR_KEY")
+    asr_cmd.add_argument("--prompt", default=None, help="给模型的提示词（专有名词、人名）")
+    asr_cmd.add_argument("--simplified", action="store_true", help="中文繁体转简体（需要 zhconv）")
+    asr_cmd.add_argument("--out", default=None, help="输出文件：.txt / .srt / .json")
+    asr_cmd.add_argument("--json", action="store_true", help="把整段结果打成 JSON")
+    asr_cmd.add_argument("--quiet", action="store_true")
+    asr_cmd.set_defaults(func=_cmd_transcribe)
 
     return parser
 
