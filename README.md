@@ -1,6 +1,6 @@
 # echolens
 
-语音识别的**端到端小流水线**：源-滤波器合成多说话人语音 → log-mel 特征 → 小型 CTC 模型 → 三档解码（贪心 / beam search / beam + 音素 bigram）→ 音素错误率（PER）、词错误率（WER）、跨说话人泛化、噪声鲁棒性（含训练时加噪的对照）→ 逐样本对齐 → 单文件 HTML 报告；外加一个本地网页界面（`echolens app`），把波形、对齐与逐帧后验摊开点着看。
+语音识别的**端到端小流水线**：源-滤波器合成多说话人语音 → log-mel 特征 → 小型 CTC 模型 → 三档解码（贪心 / beam search / beam + 音素 bigram）→ 音素错误率（PER）、词错误率（WER）、跨说话人泛化、噪声鲁棒性（含训练时加噪的对照）→ 逐样本对齐 → 单文件 HTML 报告；外加一个本地网页界面（`echolens app`），把波形、对齐与逐帧后验摊开点着看。真要转真人录音，另有一条 `echolens transcribe`：本地 faster-whisper 或任何 OpenAI 兼容接口。
 
 一条命令，纯 CPU，约两分钟跑完，出来一个可以贴进周报的网页报告。
 
@@ -51,6 +51,30 @@ echolens app --checkpoint out/_rand2/echolens.pt --port 9000
 ![app noisy](https://aka.doubaocdn.com/s/B2mGnTLcYf)
 
 > 上一张是干净句（`kato` + `mesa`，s1，8 个音素全对），下一张是 0 dB 白噪里的陌生音色（`toku`，s6）：三个解码器都把尾音 `u` 换成了 `m` 或直接丢掉，对齐里那格红色就是这处替换。热力图上声音两端大片 blank、中间一行行亮起来，能看出它在哪几帧拿不准。
+
+## 真实录音转文字：`echolens transcribe`
+
+前面那套 10 音素 CTC 只认合成语音；要转真人录音，走这条：
+
+```bash
+pip install -e ".[asr]"     # 本地引擎：faster-whisper + zhconv
+
+echolens transcribe meeting.m4a --model small --language zh --simplified
+echolens transcribe talk.wav --engine api --base-url https://api.openai.com/v1 --out talk.srt
+```
+
+两条路共用同一个命令：
+
+- `--engine whisper`（默认）：本地跑 faster-whisper，纯 CPU 可用，第一次运行会从 HuggingFace 下模型（`small` 约 480 MB）。大小从 `tiny / base / small / medium` 到 `large-v3`，中文建议 `small` 起步、要求高再上 `medium`；静音切分默认开着，`--no-vad` 可关。
+- `--engine api`：任何 OpenAI 兼容的 `POST /audio/transcriptions`。密钥读 `--api-key`，或环境变量 `ECHOLENS_ASR_KEY`（也认 `OPENAI_API_KEY`）；换服务商只改 `--base-url` 和 `--model`。
+
+`--out` 按后缀写 `.txt` / `.srt` / `.json`；`--json` 直接把整段结果（含每段起止秒）打到标准输出。中文 Whisper 常年输出繁体，加 `--simplified` 用 zhconv 转简体；`--prompt` 可以塞人名、术语这类先验。
+
+实测（本机 CPU，`small` + `int8`）：5.9 秒的中文句识别成"今天天气不错，我们下午三点在三楼会议室开会"，转写本身 1.6 秒；7.6 秒英文两句 2.3 秒。整条命令还要再加约 6 秒模型加载。
+
+模型下载不通的话（国内经常如此），先设 `HF_ENDPOINT=https://hf-mirror.com` 再跑——本机就是靠这个镜像下下来的。`PyAV` 版本太旧（`av.open` 没有 `metadata_errors`）会直接报错，装 `av>=10,<14` 就行。
+
+两条路互不影响：`app` 看的是玩具模型怎么判，`transcribe` 才是把录音变成文字，它不读 `out/echolens.pt`。
 
 ## 实测结果
 
@@ -206,7 +230,8 @@ echolens/
   cli.py         demo / train / eval
   app.py         本地识别台：HTTP 服务、单句推理、逐帧后验与分段
   static/        识别台的页面（HTML/CSS/JS，纯静态、不联网）
-tests/           49 个单测，覆盖特征、共振峰、噪声、加噪装配（固定档与随机档）、对齐、解码、语言模型、报告、训练、识别台
+  transcribe.py  真实录音转写：faster-whisper 本地引擎与 OpenAI 兼容接口
+tests/           59 个单测，覆盖特征、共振峰、噪声、加噪装配（固定档与随机档）、对齐、解码、语言模型、报告、训练、识别台、转写
 examples/        调 Python API 的示例
 ```
 
@@ -216,13 +241,13 @@ examples/        调 Python API 的示例
 python -m unittest discover -s tests
 ```
 
-49 个用例，约 6 秒。CI 在 Python 3.10 / 3.11 / 3.12 上跑单测，外加两次小规模 demo 冒烟（干净训练、加噪训练）并检查报告关键字。
+59 个用例，约 6 秒。CI 在 Python 3.10 / 3.11 / 3.12 上跑单测，外加两次小规模 demo 冒烟（干净训练、加噪训练）并检查报告关键字。
 
 ## 边界
 
 说清楚它不是什么：
 
-- **还是合成语音，没有真实录音。** 共振峰是稳态的设计值，没有协同发音、没有过渡段、没有韵律；"说话人"是四个数字（基频、声道长度、语速、声门倾斜），不是真人声纹。PER 0.018 不代表任何真实场景的识别能力，别拿它和 LibriSpeech 上的结果比。
+- **还是合成语音，没有真实录音。** 共振峰是稳态的设计值，没有协同发音、没有过渡段、没有韵律；"说话人"是四个数字（基频、声道长度、语速、声门倾斜），不是真人声纹。PER 0.018 不代表任何真实场景的识别能力，别拿它和 LibriSpeech 上的结果比。这是玩具 CTC 的限制；`echolens transcribe` 走的是另一套预训练模型，不受这条约束。
 - **共振峰模型是粗的。** 三级级联、带宽固定、声源是简单脉冲串；真实语音还有鼻化、气声、声道长度的时间变化。
 - **语言模型只是音素 bigram。** 词表 16 个词，它压不住词级错误；没有词级 n-gram、没有前缀树、没有用外部语料训练的 LM。
 - **抗噪是可选项，不是默认。** `--noise-aug`（固定档）和 `--noise-aug-random`（区间随机）都能把噪声曲线压下来，代价是陌生音色略差、训练时间三四倍；噪声类型也只有白噪，没有 babble、音乐、混响。
