@@ -31,7 +31,7 @@ echolens app                              # 起本地界面，点着看波形、
 报告是跑完之后看的，界面是跑的时候点的：
 
 ```bash
-echolens app                                   # 浏览器打开 http://127.0.0.1:8765
+ echolens app                                   # 浏览器打开 http://127.0.0.1:8765
 echolens app --checkpoint out/_rand2/echolens.pt --port 9000
 ```
 
@@ -46,11 +46,17 @@ echolens app --checkpoint out/_rand2/echolens.pt --port 9000
 
 服务端只用标准库的 `http.server`，前端是 `echolens/static/` 下的三个文件，不联网、不装 FastAPI 之类的依赖。模型只加载一次，单句推理 20–40 ms（纯 CPU）。
 
+第三个标签「真实转写」走的是另一套模型：选本地 faster-whisper 或 OpenAI 兼容接口，传一段录音，右边给出文字、语言、时长和每段时间轴，可以一键复制。本地模型第一次加载后常驻在服务进程里（`small` 首次要下 480 MB），之后同进程复用；API 的 key 只存在浏览器的 localStorage，不写服务端文件；文件上限 20 MB。
+
 ![app clean](https://aka.doubaocdn.com/s/kyAFCWoHMI)
 
 ![app noisy](https://aka.doubaocdn.com/s/B2mGnTLcYf)
 
 > 上一张是干净句（`kato` + `mesa`，s1，8 个音素全对），下一张是 0 dB 白噪里的陌生音色（`toku`，s6）：三个解码器都把尾音 `u` 换成了 `m` 或直接丢掉，对齐里那格红色就是这处替换。热力图上声音两端大片 blank、中间一行行亮起来，能看出它在哪几帧拿不准。
+
+![app transcribe](https://aka.doubaocdn.com/s/G4oHHS1Y2N)
+
+> 这一张是「真实转写」标签：本地 `small` 模型跑 5.9 秒中文，算上模型加载整条请求 37 秒，转写本身 1.6 秒；正文和分段时间轴在同一张卡里，下面那行是每段的起止。
 
 ## 真实录音转文字：`echolens transcribe`
 
@@ -231,7 +237,7 @@ echolens/
   app.py         本地识别台：HTTP 服务、单句推理、逐帧后验与分段
   static/        识别台的页面（HTML/CSS/JS，纯静态、不联网）
   transcribe.py  真实录音转写：faster-whisper 本地引擎与 OpenAI 兼容接口
-tests/           59 个单测，覆盖特征、共振峰、噪声、加噪装配（固定档与随机档）、对齐、解码、语言模型、报告、训练、识别台、转写
+tests/           62 个单测，覆盖特征、共振峰、噪声、加噪装配（固定档与随机档）、对齐、解码、语言模型、报告、训练、识别台、转写
 examples/        调 Python API 的示例
 ```
 
@@ -241,7 +247,7 @@ examples/        调 Python API 的示例
 python -m unittest discover -s tests
 ```
 
-59 个用例，约 6 秒。CI 在 Python 3.10 / 3.11 / 3.12 上跑单测，外加两次小规模 demo 冒烟（干净训练、加噪训练）并检查报告关键字。
+62 个用例，约 7 秒。CI 在 Python 3.10 / 3.11 / 3.12 上跑单测，外加两次小规模 demo 冒烟（干净训练、加噪训练）并检查报告关键字。
 
 ## 边界
 
