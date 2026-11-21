@@ -17,6 +17,7 @@
     <div class="tabs">
       <button class="tab on" data-mode="synth" id="tabSynth">合成一句</button>
       <button class="tab" data-mode="pcm" id="tabPcm">上传音频</button>
+      <button class="tab" data-mode="asr" id="tabAsr">真实转写</button>
     </div>
 
     <div id="synthBox">
@@ -45,13 +46,39 @@
       <p class="hint">浏览器会先把它重采样到 8 kHz，再交给模型。词表只有 a i u e o k t s m r，真实录音大概率对不上——这里只保证"模型怎么判"是透明的。</p>
     </div>
 
+    <div id="asrBox" hidden>
+      <label class="field">
+        <span>引擎</span>
+        <select id="asrEngine">
+          <option value="whisper">本地 faster-whisper</option>
+          <option value="api">OpenAI 兼容接口</option>
+        </select>
+      </label>
+      <div class="pair" id="asrLocalRow">
+        <label class="field"><span>模型</span><select id="asrModel"></select></label>
+        <label class="field"><span>语言</span><select id="asrLang"></select></label>
+      </div>
+      <div id="asrApiRow" hidden>
+        <label class="field"><span>接口地址</span><input id="asrBase" type="text" value="https://api.openai.com/v1"></label>
+        <label class="field"><span>模型名</span><input id="asrApiModel" type="text" value="whisper-1"></label>
+        <label class="field"><span>API Key</span><input id="asrKey" type="password" placeholder="sk-…（只留在本机浏览器）"></label>
+      </div>
+      <label class="field">
+        <span>录音文件（≤ 20 MB）</span>
+        <input id="asrFile" type="file" accept="audio/*,video/mp4">
+      </label>
+      <label class="check"><input id="asrSimp" type="checkbox" checked> 繁体转简体</label>
+      <button class="go" id="goAsr">转写这段录音</button>
+      <p class="hint">这里走的是真模型：本地 whisper 或远程接口，和上面那套 10 音素玩具模型无关。用本地引擎时音频不出这台机器。</p>
+    </div>
+
     <p class="hint foot" id="footHint"></p>
   </aside>
 
   <section class="results">
     <div class="empty" id="empty">
-      <div class="emptyTitle">还没有识别结果</div>
-      <div class="emptyText">右边选说话人和一两个词，点「合成并识别」。想听噪声下的表现，把「背景噪声」换到 0 dB 或 −5 dB。</div>
+      <div class="emptyTitle" id="emptyTitle">还没有识别结果</div>
+      <div class="emptyText" id="emptyText">右边选说话人和一两个词，点「合成并识别」。想听噪声下的表现，把「背景噪声」换到 0 dB 或 −5 dB。</div>
     </div>
 
     <div class="grid" id="grid" hidden>
@@ -76,6 +103,21 @@
         <div class="head"><span>逐帧后验</span><span class="dim" id="heatLabel">—</span></div>
         <canvas id="heat" width="980" height="252"></canvas>
         <div class="legend" id="legend"></div>
+      </div>
+    </div>
+
+    <div class="asrOut" id="asrResult" hidden>
+      <div class="card">
+        <div class="head">
+          <span>转写结果</span>
+          <span class="dim" id="asrMeta">—</span>
+        </div>
+        <div class="asrText" id="asrText"></div>
+        <div class="asrSegs" id="asrSegs"></div>
+        <div class="asrFoot">
+          <button class="copy" id="copyAsr" type="button">复制文本</button>
+          <span class="dim" id="asrCopyTip"></span>
+        </div>
       </div>
     </div>
   </section>
