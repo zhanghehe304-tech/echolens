@@ -31,7 +31,7 @@ echolens app                              # 起本地界面，点着看波形、
 报告是跑完之后看的，界面是跑的时候点的：
 
 ```bash
- echolens app                                   # 浏览器打开 http://127.0.0.1:8765
+echolens app                                   # 浏览器打开 http://127.0.0.1:8765
 echolens app --checkpoint out/_rand2/echolens.pt --port 9000
 ```
 
