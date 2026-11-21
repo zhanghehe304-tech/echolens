@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import tempfile
 import threading
 import time
 import webbrowser
@@ -18,10 +20,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-__all__ = ["serve", "recognize", "emission_spans", "main"]
+__all__ = ["serve", "recognize", "transcribe_audio", "emission_spans", "main"]
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_SECONDS = 20.0
+MAX_ASR_BYTES = 20 * 1024 * 1024
+AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".mp4", ".flac", ".ogg", ".opus", ".webm", ".aac", ".wma"}
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -190,7 +194,106 @@ class Runtime:
         self.model.eval()
         self.sr = int(sr)
         self.lock = threading.Lock()
+        self.asr_lock = threading.Lock()
+        self.asr_cache: Dict[tuple, Any] = {}
         self.params = int(sum(p.numel() for p in self.model.parameters()))
+
+
+def _asr_meta() -> Dict[str, Any]:
+    import importlib.util
+
+    def has(name: str) -> bool:
+        try:
+            return importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            return False
+
+    return {
+        "whisper": has("faster_whisper"),
+        "zhconv": has("zhconv"),
+        "models": ["tiny", "base", "small", "medium", "large-v3"],
+        "default_model": "small",
+        "languages": [
+            ["", "自动识别"], ["zh", "中文"], ["en", "英文"], ["ja", "日文"], ["ko", "韩文"],
+        ],
+        "max_bytes": MAX_ASR_BYTES,
+    }
+
+
+def transcribe_audio(runtime: Runtime, body: Dict[str, Any]) -> Dict[str, Any]:
+    """真实转写：把前端传上来的原始音频字节落到临时文件，交给 whisper / API 引擎。"""
+    from .transcribe import TranscriptionError, make_transcriber
+
+    started = time.perf_counter()
+    raw = base64.b64decode(str(body.get("audio") or ""))
+    if not raw:
+        raise ValueError("没有收到音频")
+    if len(raw) > MAX_ASR_BYTES:
+        raise ValueError(f"音频太大（上限 {MAX_ASR_BYTES // (1024 * 1024)} MB）")
+
+    engine = str(body.get("engine") or "whisper")
+    language = str(body.get("language") or "") or None
+    simplified = bool(body.get("simplified"))
+    suffix = Path(str(body.get("filename") or "audio.wav")).suffix.lower()
+    if suffix not in AUDIO_SUFFIXES:
+        suffix = ".wav"
+
+    fd, temp_name = tempfile.mkstemp(prefix="echolens-asr-", suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+        if engine == "whisper":
+            model = str(body.get("model") or "small")
+            device = str(body.get("device") or "cpu")
+            compute_type = str(body.get("compute_type") or "int8")
+            key = (model, device, compute_type)
+            with runtime.asr_lock:  # faster-whisper 的模型不适合并发推理
+                transcriber = runtime.asr_cache.get(key)
+                if transcriber is None:
+                    transcriber = make_transcriber(
+                        "whisper",
+                        model=model,
+                        device=device,
+                        compute_type=compute_type,
+                        language=language,
+                        simplified=simplified,
+                        vad=bool(body.get("vad", True)),
+                    )
+                    runtime.asr_cache[key] = transcriber
+                transcriber.language = language
+                transcriber.simplified = simplified
+                result = transcriber.transcribe(temp_name)
+        elif engine == "api":
+            transcriber = make_transcriber(
+                "api",
+                model=str(body.get("model") or "whisper-1"),
+                base_url=str(body.get("base_url") or "https://api.openai.com/v1"),
+                api_key=body.get("api_key") or None,
+                language=language,
+                prompt=body.get("prompt") or None,
+                simplified=simplified,
+            )
+            result = transcriber.transcribe(temp_name)
+        else:
+            raise TranscriptionError(f"不认识的引擎：{engine}")
+    finally:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+
+    return {
+        "engine": result.engine,
+        "text": result.text,
+        "language": result.language,
+        "duration": result.duration,
+        "segments": [
+            {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text}
+            for s in result.segments
+        ],
+        "bytes": len(raw),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+    }
 
 
 def _meta(runtime: Runtime) -> Dict[str, Any]:
@@ -209,6 +312,7 @@ def _meta(runtime: Runtime) -> Dict[str, Any]:
             for index, name in enumerate(SPEAKERS)
         ],
         "words": list(WORDS),
+        "asr": _asr_meta(),
     }
 
 
@@ -284,7 +388,7 @@ def _make_handler(runtime: Runtime):
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
-            if path != "/api/recognize":
+            if path not in ("/api/recognize", "/api/transcribe"):
                 self._json(404, {"ok": False, "error": f"没有这个接口：{path}"})
                 return
             try:
@@ -294,7 +398,7 @@ def _make_handler(runtime: Runtime):
                 if length > 32 * 1024 * 1024:
                     raise ValueError("请求体太大（上限 32 MB）")
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                payload = self._recognize(body)
+                payload = self._recognize(body) if path == "/api/recognize" else transcribe_audio(runtime, body)
                 self._json(200, {"ok": True, **payload})
             except BrokenPipeError:
                 return
